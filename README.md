@@ -167,3 +167,5 @@ If a Claude compaction recording attempt has an uncertain outcome or its committ
 Setup operations for this runner are serialized by a private setup lock. If setup is interrupted and reports an existing lock, verify no setup process remains before removing the exact reported lock. Do not run concurrent install or uninstall commands.
 
 See the [release statechart and validation map](docs/context-engine-statechart.md) ([PDF](docs/Context-Engine-Statechart.pdf)) for the published e5da333/644d02b baseline. It does not validate later local fixes.
+
+Participation updates flush the new record before atomic publication, then flush its directory and state root before reporting success. A flush failure is reported; a failure after publication can leave the new state visible and does not imply rollback. Event Log append and torn-tail repair retain the verified parent descriptor through lease creation, stale-lease cleanup, payload writes and lease release, including when that parent is renamed. These synthetic checks do not establish durability under every filesystem or power-loss condition.
