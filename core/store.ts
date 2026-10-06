@@ -44,11 +44,11 @@ export function resolveStateRoot(explicit?: string): string {
   return join(xdg && isAbsolute(xdg) ? xdg : join(homedir(), '.local', 'state'), 'context-engine');
 }
 
-/** `<basename>-<8 hex of sha256(realpath)>`: readable, and distinct for same-named projects. */
+/** `<basename>-<sha256(realpath)>`: readable, with collision-resistant project isolation. */
 export function projectKey(projectRoot: string): string {
   const real = realpathSync(projectRoot);
   const name = basename(real).replace(/[^\w.-]/g, '_') || 'root';
-  return `${name}-${sha(real).slice(0, 8)}`;
+  return `${name}-${sha(real)}`;
 }
 
 /** The workspace directory that holds every session's Working Context (self-gitignored). */
@@ -103,7 +103,16 @@ export function ensureDirs(l: Layout, stateRoot: string): void {
   assertWorkingContextDir(l.workingContext);
   // Self-ignoring directory: keeps Working Contexts out of git without editing the project's .gitignore.
   const ignore = join(dirname(dirname(l.workingContext)), '.gitignore');
-  if (!existsSync(ignore)) writeFileSync(ignore, '# Context Engine Working Contexts are never committed.\n*\n');
+  try {
+    // O_EXCL does not follow even a dangling symlink at this name.
+    writeFileSync(ignore, '# Context Engine Working Contexts are never committed.\n*\n', { flag: 'wx' });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    const existing = readWorkingContextFile(ignore);
+    if (!Buffer.isBuffer(existing)) throw new Error('.context-engine/.gitignore must be a regular, unlinked file');
+    const rules = existing.toString('utf8').split(/\r?\n/).map(v => v.trim()).filter(v => v && !v.startsWith('#'));
+    if (rules.at(-1) !== '*') throw new Error('.context-engine/.gitignore must end with a blanket * rule; fix it before enabling Context Engine');
+  }
 }
 
 const FRAME_KEY = /^[0-9a-f]{32}$/;
@@ -399,4 +408,3 @@ export function removeTemps(privateDirs: string[], sharedDirs: string[]): string
   }
   return removed;
 }
-

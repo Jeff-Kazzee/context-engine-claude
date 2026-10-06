@@ -177,12 +177,17 @@ export function openSession(opts: OpenOptions): OpenResult {
   const me = holderFor(opts.ownerPid ?? process.pid, opts.runner, opts.hardLimit);
   const got = acquireLock(l.lock, me);
   if (got.status === 'refused') return { status: 'refused', holder: got.holder };
-  // Cut a torn Event Log tail before anything else is appended to it.
-  const tornBytes = truncateTornTail(l.events);
-  if (got.takeoverFrom) appendLog(l.events, { type: 'lock-takeover', from: got.takeoverFrom, to: me, reason: 'previous holder is dead' });
-  const core = new Core(l, opts.hardLimit, me, experimentOn('stale-refs', opts.experiments) ? opts.projectRoot : null, opts.budgetTokens ?? null);
-  core.recover(tornBytes);
-  return { status: 'open', session: core.facade() };
+  try {
+    // Cut a torn Event Log tail before anything else is appended to it.
+    const tornBytes = truncateTornTail(l.events);
+    if (got.takeoverFrom) appendLog(l.events, { type: 'lock-takeover', from: got.takeoverFrom, to: me, reason: 'previous holder is dead' });
+    const core = new Core(l, opts.hardLimit, me, experimentOn('stale-refs', opts.experiments) ? opts.projectRoot : null, opts.budgetTokens ?? null);
+    core.recover(tornBytes);
+    return { status: 'open', session: core.facade() };
+  } catch (e) {
+    if (!got.reused) releaseLock(l.lock, me);
+    throw e;
+  }
 }
 
 /**

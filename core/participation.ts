@@ -49,7 +49,7 @@ export function findRecord(ref: ParticipationRef): { project: string; state: 'on
     if (bytes) {
       try {
         const rec = JSON.parse(bytes.toString('utf8'));
-        if (rec.state === 'on' || rec.state === 'off') return { project: dir, state: rec.state, at: rec.at };
+        if (rec.projectRoot === dir && (rec.state === 'on' || rec.state === 'off')) return { project: dir, state: rec.state, at: rec.at };
       } catch {
         // A corrupt record counts as no record.
       }
