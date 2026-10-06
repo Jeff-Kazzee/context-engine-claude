@@ -141,11 +141,11 @@ for (const opts of [{ budget: '40000', file: 'x'.repeat(80001) }, { budget: '1',
 test('Claude status checks the runtime-specific CLI rather than the sibling generic alias', () => {
   const source = readFileSync(new URL('../../../setup/status.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replaceAll('export function', 'function');
-  const deps = { join, delimiter, existsSync, killSwitchOn: () => false, participation: () => ({ state: 'off', active: false }), installedLedger: () => null, safeRead: () => null, CLAUDE_PLUGIN_IDS: [], TURN_MODE: adapter.TURN_MODE, PER_STEP_MODE: adapter.PER_STEP_MODE, MODE_ENV: 'MODE', perStepOn: () => false };
+  const deps = { join, delimiter, existsSync, dirname: (path: string) => path.slice(0,path.lastIndexOf('/')), openPrivateDirectory: () => undefined, closeSync: () => {}, killSwitchOn: () => false, participation: () => ({ state: 'off', active: false }), installedLedger: () => null, safeRead: () => null, CLAUDE_PLUGIN_IDS: [], TURN_MODE: adapter.TURN_MODE, PER_STEP_MODE: adapter.PER_STEP_MODE, MODE_ENV: 'MODE', perStepOn: () => false };
   const status = new Function('deps', `const {${Object.keys(deps).join(',')}} = deps; ${erased}; return statusText;`)(deps);
   const root = mkdtempSync(join(tmpdir(), 'ce-cli-status-'));
   try {
-    const ctx = { env: { PATH: root }, claudeHome: root, checkout: '/synthetic' };
+    const ctx = { env: { PATH: root }, claudeHome: root, checkout: '/synthetic', setupDir: root+'/setup' };
     writeFileSync(join(root, 'context-engine'), 'synthetic sibling alias');
     assert.ok(status(ctx, root).lines.includes('CLI on PATH: false'));
     rmSync(join(root, 'context-engine'));

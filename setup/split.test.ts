@@ -14,7 +14,7 @@ test('default install and uninstall change only the selected runner and restore 
   else assert.deepEqual(tree(w.claudeHome), beforeClaude);
   // A stale other-runner ledger must not be read or acted on by this distribution.
   writeFileSync(join(w.stateDir,'setup','codex.json'),'invalid-other-runner-ledger');
-  mkdirSync(join(w.stateDir,'setup','projects'),{recursive:true});
+  mkdirSync(join(w.stateDir,'setup','projects'),{recursive:true,mode:0o700});
   writeFileSync(join(w.stateDir,'setup','projects','sibling.json'),'invalid-sibling-project-ledger');
   mkdirSync(join(w.project,'.codex'),{recursive:true});
   writeFileSync(join(w.project,'.codex','config.toml'),'# sibling settings must stay\n');
@@ -46,7 +46,7 @@ test('failed installation restores both runner homes and can be retried', () => 
  const w=world(); writeFileSync(join(w.claudeHome,'settings.json'),'{}\n'); writeFileSync(join(w.codexHome,'config.toml'),'# keep\n');
  const a=tree(w.claudeHome),b=tree(w.codexHome);
  const r=w.ce(['install'],{env:{FAKE_CLAUDE_FAIL: 'plugin install'}});
- assert.equal(r.status,1,r.stdout+r.stderr);assert.match(r.stderr,/tracked configuration restored/);
+ assert.equal(r.status,1,r.stdout+r.stderr);assert.match(r.stderr,/tracked configuration rollback completed/);
  const after=tree(w.claudeHome); for(const [path,bytes] of Object.entries(a)) assert.equal(after[path],bytes,path);
  assert.equal(existsSync(join(w.claudeHome,'plugins','cache','context-engine')),false);assert.deepEqual(tree(w.codexHome),b);
  assert.equal(w.ce(['install']).status,0);assert.equal(w.ce(['install']).status,1);assert.equal(w.ce(['uninstall']).status,0);

@@ -18,7 +18,9 @@ Copy the following prompt, replacing the project placeholder before sending it:
 Set up Context Engine for Claude Code from
 https://github.com/Jeff-Kazzee/context-engine-claude
 for this project: <absolute project path>.
-Read the CURRENT README.md, AGENTS.md, PROVENANCE.md, SOURCE.json and
+This is the open PR candidate on release/runtime-plugin-agent-guides; main is
+bootstrap-only. Verify the candidate commit and source review/owner approval
+before any installation trial. Read the CURRENT README.md, AGENTS.md, PROVENANCE.md, SOURCE.json and
 adapters/claude/README.md before executing anything. Verify the actual OS,
 Node version, claude version and available plugin/mod commands against those
 docs and their CLI help. The inherited compatibility baseline is Claude Code 2.1.289 (mods early access);
@@ -61,8 +63,10 @@ claude plugin --help
 These commands change configuration. Run them only after the preflight above, in a supported environment where you approve plugin installation. Keep the checkout at its installed path: hook commands refer to it. If the sibling adapter is already installed, first choose shared or isolated participation as described below; do not run `enable` until that scope is approved.
 
 ```sh
-git clone https://github.com/Jeff-Kazzee/context-engine-claude.git
+git clone --branch release/runtime-plugin-agent-guides --single-branch https://github.com/Jeff-Kazzee/context-engine-claude.git
 cd context-engine-claude
+git rev-parse HEAD
+# Verify this candidate head against the reviewed PR before proceeding.
 npm ci
 npm link
 context-engine-claude install
@@ -107,7 +111,7 @@ context-engine recall --session <session-id> decision
 context-engine show --session <session-id> <event-id>
 ```
 
-`read` names every next part when a file needs paging. `recall` and `show` are limited to the caller's project, with bounded output. Recall may report `accounting: skipped` if the Event Log cannot be written in a sandbox; that path is unit-tested, not established by a real sandbox session.
+`read` names every next part when a file needs paging. It refuses files above 16 MiB before loading their payload; offload large content with source pointers instead of relying on unbounded paging. Invalid UTF-8 is refused by reads and citations. `recall` and `show` are limited to the caller's project, with bounded output. Recall may report `accounting: skipped` if the Event Log cannot be written in a sandbox; that path is unit-tested, not established by a real sandbox session.
 
 ## 4. Roll back or uninstall
 
@@ -121,9 +125,9 @@ context-engine-claude uninstall
 npm unlink --global context-engine-claude
 ```
 
-Claude enable/disable and kill-switch changes apply to new sessions; Codex checks participation at each hook. Backups precede config writes. Failed installation restores tracked configuration and removes newly created Context Engine namespaces. New files outside those namespaces may belong to concurrent work, so they are retained and reported on failure and uninstall rather than deleted. Their contents are not copied into the ledger. Unchanged configuration is restored byte for byte; if other tools changed it, uninstall removes only Context Engine entries and reports the backup location. Review partial failures before retrying. Unlinking the CLI alone does not uninstall plugin configuration.
+Claude enable/disable and kill-switch changes apply to new sessions; Codex checks participation at each hook. Backups precede config writes. Failed installation reverses known Context Engine configuration fields while preserving concurrent unmanaged edits, and removes newly created Context Engine namespaces. Unknown changed files are retained with their before-backups rather than overwritten. New files outside those namespaces may belong to concurrent work, so they are retained and reported on failure and uninstall rather than deleted. Their contents are not copied into the ledger. Unchanged configuration is restored byte for byte; if other tools changed it, uninstall removes only Context Engine entries and reports the backup location. Review partial failures before retrying. Unlinking the CLI alone does not uninstall plugin configuration.
 
-Working Contexts live in `<project>/.context-engine/<session>/`. Revisions, the Event Log, participation and install backups live under `$XDG_STATE_HOME/context-engine` (default `~/.local/state/context-engine`; `CONTEXT_ENGINE_STATE_DIR` overrides). Runner homes honor `CLAUDE_CONFIG_DIR`/`CODEX_HOME`. Uninstall retains those session records. Deletion from Working Context only removes future model input; prior text remains in runner transcripts and the Event Log. Delete retained data only with your own exact-path approval.
+Working Contexts live in `<project>/.context-engine/<session>/`, with managed directories private (`0700`) and the file private (`0600`). Existing user-owned managed directories/files are tightened on open; unsafe links, credentials and shared state roots are refused. Setup also refuses nonprivate state roots before changing runner configuration. If an interrupted runner append committed a revision before writing the file, recovery delivers that revision and preserves an intervening stale-file edit in the Event Log with a restore notice. Revisions, the Event Log, participation and install backups live under `$XDG_STATE_HOME/context-engine` (default `~/.local/state/context-engine`; `CONTEXT_ENGINE_STATE_DIR` overrides). Runner homes honor `CLAUDE_CONFIG_DIR`/`CODEX_HOME`. Uninstall retains those session records. Deletion from Working Context only removes future model input; prior text remains in runner transcripts and the Event Log. Delete retained data only with your own exact-path approval.
 
 ## Troubleshooting and limits
 

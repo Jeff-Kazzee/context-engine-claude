@@ -110,7 +110,7 @@ test('a failing runner command rolls the install back to the exact prior bytes',
   const before = tree(w.claudeHome);
   const r = w.ce(['install', '--claude'], { env: { FAKE_CLAUDE_FAIL: 'plugin install' } });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /tracked configuration restored/);
+  assert.match(r.stderr, /tracked configuration rollback completed/);
   const after = tree(w.claudeHome);
   for (const [path, bytes] of Object.entries(before)) assert.equal(after[path], bytes, path);
   assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
