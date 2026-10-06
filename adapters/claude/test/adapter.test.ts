@@ -188,7 +188,7 @@ test('through the real core: in a project nobody enabled, or with the kill switc
     const r = spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...process.env, CONTEXT_ENGINE: '', CONTEXT_ENGINE_STATE_DIR: f.stateDir, ...env } });
     return () => parseCoreReply({ exitCode: r.status ?? 1, stdout: r.stdout, stderr: r.stderr });
   };
-  assert.throws(open(), (e: unknown) => e instanceof CoreError && e.inactive && /context-engine enable/.test(e.message));
+  assert.throws(open(), (e: unknown) => e instanceof CoreError && e.inactive && /runtime-specific enable command/.test(e.message));
   setParticipation({ ...f, state: 'on' });
   assert.throws(open({ CONTEXT_ENGINE: 'off' }), (e: unknown) => e instanceof CoreError && e.inactive && /CONTEXT_ENGINE=off/.test(e.message));
   assert.equal(open()().revision, 0);

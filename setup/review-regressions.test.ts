@@ -6,26 +6,26 @@ import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSy
 import { basename, dirname, join } from 'node:path';
 import { tempDir } from '../core/testing.ts';
 import { safeRead, safeWrite } from './files.ts';
+
+test('overlapping install and uninstall cannot share a setup transaction', () => {
+  const w = world(), config = join(w.claudeHome, 'settings.json'); writeFileSync(config, 'ORIGINAL');
+  const ctx: any = { setupDir: join(w.stateDir, 'setup'), env: w.env };
+  const spec: any = { id: 'fake', title: 'Fake', bin: process.execPath, files: [config], watch: [w.claudeHome], namespaced: [], rules: {}, install: [], uninstall: [], prepare() {
+    assert.throws(() => install(ctx, spec), /already locked/);
+    assert.throws(() => uninstall(ctx, spec), /already locked/);
+    writeFileSync(config, 'INSTALLED');
+  } };
+  install(ctx, spec); assert.ok(installedLedger(ctx, 'fake')); assert.equal(readFileSync(config, 'utf8'), 'INSTALLED');
+  uninstall(ctx, spec); assert.equal(readFileSync(config, 'utf8'), 'ORIGINAL');
+});
 import { install, installedLedger, uninstall } from './install.ts';
 import { world } from './testing/world.ts';
 
-test('status does not claim configured active after either Claude plugin is disabled or removed', () => {
-  for (const removed of [false, true]) {
-  for (const id of ['context-engine@context-engine', 'context-engine-trigger@context-engine']) {
-    const w = world();
-    assert.equal(w.ce(['install']).status, 0);
-    assert.equal(w.ce(['enable']).status, 0);
-    const settings = join(w.claudeHome, 'settings.json');
-    const path = removed ? join(w.claudeHome, 'plugins', 'installed_plugins.json') : settings;
-    const json = JSON.parse(readFileSync(path, 'utf8'));
-    if (removed) delete json.plugins[id];
-    else json.enabledPlugins[id] = false;
-    writeFileSync(path, JSON.stringify(json));
-    const r = w.ce(['status', '--json']);
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(JSON.parse(r.stdout).claude.active, false);
-  }
-  }
+test('linked plugin namespace refuses before runner commands or external writes', () => {
+  const w = world(), external = tempDir('namespace-external'), linked = join(w.claudeHome, 'namespace'); symlinkSync(external, linked);
+  const ctx: any = { setupDir: join(w.stateDir, 'setup'), env: w.env };
+  let ran = false; const spec: any = { id: 'fake', title: 'Fake', bin: process.execPath, files: [], watch: [], namespaced: [join(linked, 'plugin')], rules: {}, install: [], prepare() { ran = true; } };
+  assert.throws(() => install(ctx, spec), /linked path/); assert.equal(ran, false); assert.deepEqual(fs.readdirSync(external), []);
 });
 
 test('pointer publication failure rolls back and can be retried', () => {
@@ -108,4 +108,23 @@ test('successful install and uninstall preserve an unrelated file created during
   uninstall(ctx, spec);
   assert.equal(readFileSync(config, 'utf8'), 'ORIGINAL');
   assert.equal(readFileSync(concurrent, 'utf8'), 'UNRELATED NEW');
+});
+
+test('status does not claim configured active after either Claude plugin is disabled or removed', () => {
+  for (const removed of [false, true]) {
+  for (const id of ['context-engine@context-engine', 'context-engine-trigger@context-engine']) {
+    const w = world();
+    assert.equal(w.ce(['install']).status, 0);
+    assert.equal(w.ce(['enable']).status, 0);
+    const settings = join(w.claudeHome, 'settings.json');
+    const path = removed ? join(w.claudeHome, 'plugins', 'installed_plugins.json') : settings;
+    const json = JSON.parse(readFileSync(path, 'utf8'));
+    if (removed) delete json.plugins[id];
+    else json.enabledPlugins[id] = false;
+    writeFileSync(path, JSON.stringify(json));
+    const r = w.ce(['status', '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).claude.active, false);
+  }
+  }
 });

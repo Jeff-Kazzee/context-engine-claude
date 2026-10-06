@@ -25,7 +25,9 @@ function world(on: On, script: { core?: (command: string, stdin?: string) => Rep
   on('process.run', async (_$, e) => {
     calls.push({ argv: e.argv, stdin: e.init?.stdin });
     const r = (script.core ?? (() => ok()))(String(e.argv[2]), e.init?.stdin);
-    return { value: { ...r, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } };
+    const parsed = JSON.parse(r.stdout);
+    if (parsed.ok && !Object.hasOwn(parsed, 'workingContextText')) parsed.workingContextText = script.file === null ? '' : script.file ?? '[[CTX_TURN 1 role=user]]\nFACT B: SENTINEL_V2';
+    return { value: { ...r, stdout: JSON.stringify(parsed), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } };
   });
   on('session.id', async () => ({ value: SID }));
   on('session.root', async () => ({ value: ROOT }));

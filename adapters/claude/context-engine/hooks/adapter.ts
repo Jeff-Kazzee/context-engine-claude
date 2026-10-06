@@ -144,7 +144,7 @@ export function workingContextBudget(input: { breakdown: ContextBreakdown | null
 export type Receipt = { kind: 'committed' | 'restored' | 'stale'; revision: number; chars: number; approxTokens: number; text: string };
 /** The core's budget report (core/budget.ts BudgetReport): its `text` is core-authored static text with numbers. */
 export type BudgetReport = { budgetTokens: number; approxTokens: number; percent: number; overBudget: boolean; tier: number; urgent: boolean; text: string };
-export type CoreReply = { ok: true; revision: number; chars: number; workingContext: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string };
+export type CoreReply = { ok: true; revision: number; chars: number; workingContext: string; workingContextText?: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string };
 
 export class CoreError extends Error {
   /** True when another live process holds the session (one writer per session). */

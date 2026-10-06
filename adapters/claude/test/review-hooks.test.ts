@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onRead?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failRead?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -27,15 +27,16 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
     prompt: { compose: async () => ({ sections: [] }) }, tool: { list: async () => [] },
     ui: { log: (s: string) => logs.push(s), status: (s?: string) => statuses.push(s) },
-    fs: { read: async () => { opts.onRead?.(); if (opts.failRead) throw new Error('synthetic read fault'); return opts.file ?? 'current context'; } },
+    fs: { read: async () => { throw new Error('live Working Context reread is forbidden in this fixture'); } },
     process: { run: async (argv: string[]) => {
       const command = argv[2]!; calls.push(command); argvCalls.push(argv); opts.onCommand?.(command);
       if (command === 'sync' && opts.failSync) throw new Error('synthetic observation failure');
       if (command === 'close' && opts.failClose) throw new Error('injected close failure');
       if ((command === 'record' || command === 'sync') && opts.inactive) return { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled"}', stderr: '' };
+      const snapshot = opts.file ?? 'current context'; if (['sync', 'record', 'native-compaction'].includes(command)) opts.onSnapshot?.();
       return command === 'record' && !opts.recordSuccess
         ? { exitCode: 1, stdout: '{"ok":false,"error":"injected record failure"}', stderr: '' }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
@@ -79,7 +80,9 @@ test('successful setup output directs activation to the Claude-specific command'
   let output = '', installs = 0;
   const deps = {
     parseArgs, SetupError: class extends Error {},
-    setupContext: () => ({ env: {}, claudeHome: '/synthetic' }),
+    realpathSync: (path: string) => path, resolve: (path: string) => path, join,
+    acquireSetupLock: () => () => {},
+    setupContext: () => ({ env: {}, claudeHome: '/synthetic', setupDir: '/synthetic-state' }),
     claudeSpec: () => ({ id: 'claude', title: 'Claude Code' }),
     claudeModeLabel: () => adapter.TURN_MODE.label,
     install: (_ctx: unknown, spec: { id: string }) => { assert.equal(spec.id, 'claude'); installs++; return []; },
@@ -218,7 +221,7 @@ test('failed Read remains an error through the actual append hook', async () => 
   assert.equal(await w.append(row), row);
 });
 
-for (const at of ['sync', 'read', 'authorize']) test(`root tools starting during ${at} wait until replacement finishes`, async () => {
+for (const at of ['sync', 'snapshot', 'authorize']) test(`root tools starting during ${at} wait until replacement finishes`, async () => {
   let toolRan = false, pending: Promise<unknown> | undefined;
   const opts: Parameters<typeof fixture>[1] = { mode: 'per-step', noAuth: true };
   const w = fixture([], opts);
@@ -227,7 +230,7 @@ for (const at of ['sync', 'read', 'authorize']) test(`root tools starting during
     assert.equal(toolRan, false, 'tool cannot mutate the observed Working Context');
   };
   if (at === 'sync') opts.onCommand = command => { if (command === 'sync') start(); };
-  if (at === 'read') opts.onRead = start;
+  if (at === 'snapshot') opts.onSnapshot = start;
   if (at === 'authorize') opts.onAuthorize = start;
   await w.step();
   assert.ok(pending); assert.equal(await pending, 'original'); assert.equal(toolRan, true);
@@ -237,7 +240,7 @@ for (const trigger of ['plugin', 'manual', 'auto']) test(`fallback read defers r
   let toolRan = false, pending: Promise<unknown> | undefined;
   const opts: Parameters<typeof fixture>[1] = { recordSuccess: true, recordChars: 600001 };
   const w = fixture([], opts);
-  opts.onRead = () => {
+  opts.onSnapshot = () => {
     pending = w.handlers.get('tool.call')!(w.$, { tool: 'Bash' }, async () => { toolRan = true; return 'original'; });
     assert.equal(toolRan, false);
   };
@@ -257,7 +260,7 @@ for (const reentry of ['tool', 'compact']) test(`native per-step delegation rele
 });
 
 for (const trigger of ['plugin', 'manual', 'auto']) test(`post-record frame-read failure cannot replay tail (${trigger})`, async () => {
-  const w = fixture([{ role: 'user', content: [{ type: 'text', text: 'ONCE_ONLY' }] }], { recordSuccess: true, failRead: true });
+  const w = fixture([{ role: 'user', content: [{ type: 'text', text: 'ONCE_ONLY' }] }], { recordSuccess: true, failSnapshot: true });
   await w.compact(trigger); await w.compact(trigger);
   assert.equal(w.calls.filter(c => c === 'record').length, 1);
   assert.equal(w.calls.filter(c => c === 'close').length, 1);
@@ -283,9 +286,18 @@ test('native rejection after durable record stands aside without recording or in
   assert.equal(w.calls.filter(c => c === 'record').length, 1);
   assert.equal(w.calls.filter(c => c === 'close').length, 1); assert.equal(w.nativeCalls(), 1);
 });
-test('fallback frame-read failure preserves produced native result and stands aside', async () => {
-  const w = fixture([], { recordSuccess: true, recordChars: 600001, failRead: true });
+test('missing fallback snapshot preserves produced native result and stands aside', async () => {
+  const w = fixture([], { recordSuccess: true, recordChars: 600001, failSnapshot: true });
   assert.equal((await w.compact('manual')).messages[0].text, 'native summary');
   assert.match((await w.compact('plugin')).skip, /inactive/);
   assert.equal(w.calls.filter(c => c === 'record').length, 1); assert.equal(w.nativeCalls(), 1);
+});
+
+test('compaction uses the committed reply when the live file changes before delivery', async () => {
+  const opts: Parameters<typeof fixture>[1] = { recordSuccess: true, file: 'COMMITTED_SNAPSHOT' };
+  const w = fixture([], opts);
+  opts.onSnapshot = () => { opts.file = 'UNCOMMITTED_OVERSIZED_OR_PRIVATE_CHANGE'; };
+  const result = await w.compact('plugin');
+  assert.match(result.messages[0].text, /COMMITTED_SNAPSHOT/);
+  assert.doesNotMatch(result.messages[0].text, /UNCOMMITTED/);
 });

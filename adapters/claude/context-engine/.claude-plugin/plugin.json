@@ -1,6 +1,6 @@
 {
   "name": "context-engine",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Context Engine for Claude Code (V1): the agent's Working Context file replaces the conversation at each user-turn boundary. Full Replacement per user turn; Injection within a turn. Opt-in: EXPERIMENTAL: Full Replacement per model step.",
   "author": {
     "name": "Jeff Kazzee"

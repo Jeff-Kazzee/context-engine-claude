@@ -83,6 +83,11 @@ import {
 
 const SECTION_ID = 'context-engine:working-context';
 
+function committedText(reply: CoreReply): string {
+  if (typeof reply.workingContextText !== 'string') throw new Error('core reply has no committed Working Context snapshot; delivery refused');
+  return reply.workingContextText;
+}
+
 type Opened = { sessionId: string; projectRoot: string; workingContext: string; frameKey: string };
 
 /** Set once the core has opened this session; null when the mod stands aside. */
@@ -277,12 +282,12 @@ async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Prom
   if (reply.receipt) log($, reply.receipt.text);
   const [fileText, composed, tools, own] = await Promise.all([
     // Before the first commit (revision 0) there is no file yet; after it, a sync leaves one in place.
-    reply.revision === 0 ? $.fs.read(reply.workingContext).catch(() => '') : $.fs.read(reply.workingContext),
+    Promise.resolve(committedText(reply)),
     $.prompt.compose(),
     $.tool.list(),
     section($, at),
   ]);
-  // Check the text actually read too: the file may have changed after sync.
+  // Check the committed text too before delivering this step.
   if (String(fileText).length > HARD_LIMIT_CHARS || (budget !== undefined && Math.ceil(String(fileText).length / 4) > budget)) {
     throw new Error('Working Context exceeds the per-step budget or hard limit');
   }
@@ -453,7 +458,7 @@ export const register: Register = (on, options) => {
           : reply.budget?.overBudget
           ? fallbackNotice({ approxTokensBefore: reply.budget.approxTokens, budgetTokens: reply.budget.budgetTokens, revision: replaced.revision })
           : noRoomNotice({ ...room!, revision: replaced.revision });
-        const fileText = String(await $.fs.read(replaced.workingContext));
+        const fileText = committedText(replaced);
         assertNoActiveTools();
         delivered = replaced.budget?.approxTokens;
         lastDeliveredRevision = replaced.revision;
@@ -461,7 +466,7 @@ export const register: Register = (on, options) => {
         const notices = [notice, ...(replaced.budget ? [replaced.budget.text] : [])];
         return { messages: [{ role: 'user', text: compactionText(replaced.workingContext, fileText, notices, COMPACTION_ONLY_FALLBACK.label, at.frameKey), toolUses: [] }] };
       }
-      const fileText = String(await $.fs.read(reply.workingContext));
+      const fileText = committedText(reply);
       const notices = [...(reply.receipt ? [reply.receipt.text] : []), ...(reply.budget ? [reply.budget.text] : [])];
       assertNoActiveTools();
       delivered = reply.budget?.approxTokens;

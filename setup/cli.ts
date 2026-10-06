@@ -1,6 +1,9 @@
 // Setup commands for people: install, uninstall, enable, disable, status. Text output.
 import { parseArgs } from 'node:util';
-import { install, SetupError, uninstall } from './install.ts';
+import { realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { acquireSetupLock } from './files.ts';
+import { installLocked as install, SetupError, uninstallLocked as uninstall } from './install.ts';
 import { disableProject, enableProject } from './project.ts';
 import { claudeSpec, type RunnerSpec, setupContext } from './runners.ts';
 import { claudeModeLabel, statusText } from './status.ts';
@@ -36,9 +39,11 @@ export async function runSetup(argv: string[]): Promise<number> {
     return 1;
   }
   const ctx = setupContext();
-  const projectRoot = values.project ?? process.cwd();
+  const projectRoot = realpathSync(resolve(values.project ?? process.cwd()));
   const out = (lines: string[]) => process.stdout.write(`${lines.join('\n')}\n`);
+  let release: (() => void) | undefined;
   try {
+    if (['install', 'uninstall', 'enable', 'disable'].includes(command ?? '')) release = acquireSetupLock(join(ctx.setupDir, 'claude.setup.lock'));
     if (command === 'install' || command === 'uninstall') {
       const specs: RunnerSpec[] = [claudeSpec(ctx)];
       let failed = false;
@@ -78,7 +83,7 @@ export async function runSetup(argv: string[]): Promise<number> {
     if (!(e instanceof SetupError)) throw e;
     process.stderr.write(`${e.message}\n`);
     return 1;
-  }
+  } finally { release?.(); }
   process.stderr.write(HELP);
   return 1;
 }
