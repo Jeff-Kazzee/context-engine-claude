@@ -56,7 +56,7 @@ The core has no runtime dependencies; Node 24 runs the TypeScript sources direct
 
 `SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. Both coordinated runtime candidates vendor the same core version and hashes, as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
 
-The coordinated 0.1.5 source candidates share all 32 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
+The coordinated 0.1.5 source candidates share all 33 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
 
 | Source | Version | License | Use |
 |---|---|---|---|
@@ -79,3 +79,5 @@ The previous published candidate contained 30 shared core files at patch `783b50
 Directory-fsync regressions check syscall ordering before HEAD publication. They do not establish power-loss behavior on a real filesystem or supported-host installation acceptance.
 
 Late review candidate pins 32 identical shared core files at patch `fb1de2e451d4ab094bd0dab4dc05cc49ded0fe34`. Six further hosted findings are addressed with synthetic regressions; configuration backup inspection has documented limits. Supported-host installation and next-request acceptance remain separate gates.
+
+Wave7 coordinated candidate pins 33 identical shared core files at patch `5bbeba8ee93191572a7280624f4c6260214f3fb1`. Five newly confirmed findings are repaired with synthetic regressions. Prior ambient installation pointers were left untouched; fresh source review and supported-host acceptance remain separate gates.

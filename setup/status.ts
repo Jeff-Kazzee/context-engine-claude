@@ -16,7 +16,7 @@ export function claudeModeLabel(env: NodeJS.ProcessEnv, home?: string): string {
 export function statusText(ctx: SetupContext, projectRoot: string) {
   const rootFd = openPrivateDirectory(dirname(ctx.setupDir));
   if (rootFd !== undefined) closeSync(rootFd);
-  const p = participation({ projectRoot, env: ctx.env });
+  const p = participation({ projectRoot, stateDir: dirname(ctx.setupDir), env: ctx.env });
   const ledger = installedLedger(ctx, 'claude');
   const experiments=(ctx.env.CONTEXT_ENGINE_EXPERIMENTS ?? '').split(',').map(v=>v.trim()).filter(v=>v==='stale-refs');
   const label = claudeModeLabel(ctx.env, ctx.claudeHome);
