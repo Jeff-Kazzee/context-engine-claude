@@ -1,6 +1,6 @@
 # Provenance
 
-The Wave10 coordinated repair pins `c5aa0f8adf77488c6e387667805ba54232908bea` from the Claude distribution, with 37 identical shared core files in both runtime repositories. New controls use synthetic filesystem failures and runner doubles. They import no private captures or credentials and do not extend the prior live-trial acceptance to these revised heads. Source review, publication, owner merge approval and runtime acceptance remain separate gates.
+The Wave10 coordinated repair pins `e6f40de2ae3b546b91ec1fce55957d8157d49ac0` from the Claude distribution, with 37 identical shared core files in both runtime repositories. New controls use synthetic filesystem failures and runner doubles. They import no private captures or credentials and do not extend the prior live-trial acceptance to these revised heads. Source review, publication, owner merge approval and runtime acceptance remain separate gates.
 
 The independently implemented Context Engine core is MIT-licensed (see `LICENSE`). This file lists every external
 source the code draws on, with its license and what was used.
@@ -58,7 +58,7 @@ The core has no runtime dependencies; Node 24 runs the TypeScript sources direct
 
 `SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. Both coordinated runtime candidates vendor the same core version and hashes, as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
 
-The coordinated 0.1.5 source candidates share all 36 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
+The coordinated 0.1.5 source candidates share all 37 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
 
 | Source | Version | License | Use |
 |---|---|---|---|
