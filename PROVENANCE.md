@@ -56,7 +56,7 @@ The core has no runtime dependencies; Node 24 runs the TypeScript sources direct
 
 `SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. Both coordinated runtime candidates vendor the same core version and hashes, as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
 
-The coordinated 0.1.5 source candidates share all 30 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
+The coordinated 0.1.5 source candidates share all 31 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
 
 | Source | Version | License | Use |
 |---|---|---|---|
@@ -74,4 +74,6 @@ The runtime is external proprietary software, not a vendored dependency. [Anthro
 
 Fresh release history must contain only this remediated snapshot: pushing the earlier private distribution's commits would reintroduce the removed prose. Original private source, branches and recovery bundles are preserved separately. Independent review must inspect every reachable release-history blob before publication.
 
-The resumed source review covers the same 30 shared core files at patch `783b50984a37c01ad527d31a099d41737b15c526`. Additional setup and Codex adapter fixes use synthetic fixtures only; no private captures, credentials or original history were imported. Supported-host delivery acceptance remains separate.
+The previous published candidate contained 30 shared core files at patch `783b50984a37c01ad527d31a099d41737b15c526`. The current local candidate contains 31 shared core files at patch `13958ee31b2430106319bc08c1b5039becf8bee2`, including a new synthetic regression file. Independent review and owner approval must cover the final candidate before publication. Additional setup and Codex adapter fixes use synthetic fixtures only; no private captures, credentials or original history were imported. Supported-host delivery acceptance remains separate.
+
+Directory-fsync regressions check syscall ordering before HEAD publication. They do not establish power-loss behavior on a real filesystem or supported-host installation acceptance.

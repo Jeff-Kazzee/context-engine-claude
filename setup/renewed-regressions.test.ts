@@ -45,3 +45,15 @@ test('renewed: concurrent empty JSON without owned entries stays present',()=>{
  fs.writeFileSync(path,'{}\n');rollbackSnapshot(snap,{[path]:jsonRule([['owned']])});
  assert.equal(fs.readFileSync(path,'utf8'),'{}\n');
 });
+
+import { syncBuiltinESMExports } from 'node:module';
+test('renewed6: linked backup root refuses before creating external artifacts',()=>{
+ const w=world(),root=join(w.stateDir,'backups'),outside=join(w.home,'outside-backups');fs.mkdirSync(w.stateDir,{mode:0o700});fs.mkdirSync(outside,{mode:0o700});fs.symlinkSync(outside,root);
+ assert.throws(()=>takeSnapshot({backupRoot:root,kind:'synthetic',files:[],watch:[],namespaced:[]}),/linked|verified|ELOOP/);assert.deepEqual(fs.readdirSync(outside),[]);
+});
+test('renewed6: planted backup copy cannot truncate unrelated target',()=>{
+ const w=world(),file=join(w.claudeHome,'synthetic.json'),target=join(w.home,'unrelated');fs.writeFileSync(file,'SOURCE');fs.writeFileSync(target,'KEEP');const native=fs.mkdirSync;let planted=false;
+ fs.mkdirSync=((path:any,opts:any)=>{const r=native(path,opts);if(!planted&&String(path).endsWith('/before')){planted=true;fs.symlinkSync(target,join(String(path),'0-synthetic.json'));}return r;}) as typeof fs.mkdirSync;syncBuiltinESMExports();
+ try{assert.throws(()=>takeSnapshot({backupRoot:join(w.stateDir,'backups'),kind:'synthetic',files:[file],watch:[],namespaced:[]}));}finally{fs.mkdirSync=native;syncBuiltinESMExports();}
+ assert.equal(planted,true);assert.equal(fs.readFileSync(target,'utf8'),'KEEP');
+});

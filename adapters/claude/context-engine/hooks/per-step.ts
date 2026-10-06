@@ -379,15 +379,12 @@ export type RequestLogRecord = {
   stopReason: string | null;
   usage: Omit<StepUsage, 'model'>;
   model: string | null;
-  /** The request body as sent. Headers are not part of it; the auth handle is never logged. */
-  body: unknown;
-  /** The response's content, or its error. */
-  response: unknown;
+  /** Payloads and errors are deliberately omitted; heuristics cannot certify arbitrary text. */
 };
 
 /**
- * One mod-built request as the eval reads it: body, status, timing and usage. Claude Code's cost
- * ledger and its raw-body dump never see these requests, so this record is how they are counted.
+ * Accounting for one mod-built request: status, timing and usage. Request and response
+ * payloads are omitted because redaction heuristics cannot certify arbitrary text.
  */
 export function requestLogRecord(r: {
   at: string;
@@ -413,8 +410,7 @@ export function requestLogRecord(r: {
     stopReason: r.response.stop_reason ?? null,
     usage: usageOf(r.response.usage),
     model: r.response.model ?? null,
-    body: r.body,
-    response: r.response.content ?? { error: r.response.error ?? null },
+
   };
   return redactDeep(JSON.parse(JSON.stringify(rec))) as RequestLogRecord;
 }

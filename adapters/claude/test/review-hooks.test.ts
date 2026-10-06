@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -23,7 +23,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
   const statuses: Array<string | undefined> = [];
   const $ = {
     plugin: { root: '/checkout/adapters/claude/context-engine' },
-    session: { id: async () => 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
+    session: { id: async () => opts.sessionId ?? 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
     prompt: { compose: async () => ({ sections: [] }) }, tool: { list: async () => [] },
     ui: { log: (s: string) => logs.push(s), status: (s?: string) => statuses.push(s) },
@@ -36,7 +36,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
       const snapshot = opts.file ?? 'current context'; if (['sync', 'record', 'native-compaction'].includes(command)) opts.onSnapshot?.();
       return command === 'record' && !opts.recordSuccess
         ? { exitCode: 1, stdout: '{"ok":false,"error":"injected record failure"}', stderr: '' }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, budget: command === 'native-compaction' && opts.nativeOverBudget ? {overBudget:true,approxTokens:4,budgetTokens:1,text:'SYNTHETIC_OVER_BUDGET'} : undefined, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
@@ -326,4 +326,16 @@ test('renewed: session start clears edited-read state and stale tool IDs',async(
  await w.handlers.get('session.start')!(w.$,{},async()=>({}));
  await w.tool({tool:'Read',file_path:path,tool_use_id:'new'});
  assert.doesNotMatch(JSON.stringify(await w.append({message:{content:[{type:'tool_result',tool_use_id:'new',content:'NEW_SESSION_DUPLICATE'}]}})),/NEW_SESSION_DUPLICATE/);
+});
+
+test('renewed6: a retained failed close survives later sessions and is retried',async()=>{
+ const opts:Parameters<typeof fixture>[1]={sessionId:'S1',failClose:true};const w=fixture([],opts);
+ await w.handlers.get('session.start')!(w.$,{},async()=>({}));await w.end();opts.sessionId='S2';
+ await w.handlers.get('session.start')!(w.$,{},async()=>({}));await w.end();opts.failClose=false;await w.end();
+ const closes=w.argvCalls.filter(args=>args.includes('close')).map(args=>args[args.indexOf('--session')+1]);
+ assert.ok(closes.filter(id=>id==='S1').length>=2);assert.ok(closes.includes('S2'));assert.equal(closes.at(-2),'S1');assert.equal(closes.at(-1),'S2');
+});
+test('renewed6: over-budget native summary is returned without replacement framing',async()=>{
+ const w=fixture([],{recordSuccess:true,recordChars:600001,budget:'1',nativeOverBudget:true});
+ const r=await w.compact('manual');assert.equal(r.messages[0].text,'native summary');assert.equal(w.calls.filter(c=>c==='close').length,1);
 });

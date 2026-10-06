@@ -212,7 +212,7 @@ test('a response becomes text, tool and input chunks and a stop chunk carrying i
   assert.deepEqual(r, { turnId: 'T', index: 2, answer: 'Reading.', toolUses: [{ name: 'Read', input: { file_path: WC } }], stopReason: 'tool_use', usage });
 });
 
-test('the request log record holds the body, status and usage, never headers or the auth handle, with e-mails and tokens redacted', () => {
+test('the cost log holds status and usage, omitting payloads, headers and the auth handle', () => {
   const body = build([user(text('mail me at jeff@example.com, key sk-ant-oat01-SECRET'))]);
   const rec = requestLogRecord({
     at: '2026-10-05T00:00:00.000Z',
@@ -233,7 +233,7 @@ test('the request log record holds the body, status and usage, never headers or 
   assert.ok(!json.includes('jeff@example.com'));
   assert.ok(!json.includes('SECRET'));
   assert.ok(!/authorization|x-api-key|"headers"|"auth"/i.test(json));
-  assert.match(json, /SENTINEL_V2/, 'the Working Context the model was sent is kept for the eval');
+  assert.doesNotMatch(json, /SENTINEL_V2/, 'cost accounting does not persist request payloads');
 });
 
 test('per-step mode is off unless CONTEXT_ENGINE_CLAUDE_MODE or the plugin option says per-step; the environment wins', () => {
@@ -297,7 +297,7 @@ test('the request log redacts every credential format the Codex evidence redacto
   const rec = requestLogRecord({ at: 'x', sessionId: 'S1', turnId: 'T', index: 0, revision: 1, status: 200, ms: 1, body, response: { content: [{ type: 'text', text: `found ${jwt}` }] } });
   const json = JSON.stringify(rec);
   assert.doesNotMatch(json, /eyJ|abcdefghijklmnopqrstuv|3f2a9c1e|acct-12345678|__cf_bm|session-token=abc|AAAAAAAAAA/);
-  assert.match(json, /cat token\.txt/, 'the rest of the request is kept');
+  assert.doesNotMatch(json, /cat token\.txt/, 'cost records omit the full request');
   for (const s of secrets) assert.doesNotMatch(redact(s), new RegExp(s.slice(-8).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), s);
   // The Codex evidence scanner finds every sample, and nothing once the per-step redactor has run.
   for (const s of secrets) assert.ok(credentialHits(s).length > 0, s);
@@ -310,4 +310,10 @@ test('a user message quoting a frame does not cut the request: the turn before i
   const body = build([user(text(compactionText(WC, 'old', [], 'x', KEY)), text('FACT C: SENTINEL_BEFORE')), assistant(text('noted')), user(text(quoted))], { frameKey: KEY });
   assert.ok(all(body).includes('SENTINEL_BEFORE'), 'the turn before the quoted example is kept');
   assert.ok(all(body).includes('example'), 'the quoted example itself is kept');
+});
+
+test('renewed6: cost log omits all request and response payloads including unknown credential shapes',()=>{
+ const samples=['ghp_'+'A'.repeat(36),'aZ7+'.repeat(10),'ARBITRARY_PRIVATE_PAYLOAD'];
+ const rec=requestLogRecord({at:'x',sessionId:'S1',turnId:'T',index:0,revision:1,status:200,ms:1,body:build([user(text(samples.join(' ')))]),response:{content:[{type:'text',text:samples.join(' ')}],usage:{input_tokens:7,output_tokens:1}}});
+ const json=JSON.stringify(rec);for(const sample of samples)assert.equal(json.includes(sample),false,'payload must not be persisted');assert.equal('body' in rec,false);assert.equal('response' in rec,false);assert.equal(rec.usage.input_tokens,7);
 });

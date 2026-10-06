@@ -93,7 +93,7 @@ type Opened = { sessionId: string; projectRoot: string; workingContext: string; 
 /** Set once the core has opened this session; null when the mod stands aside. */
 let opened: Opened | null = null;
 /** A discarded session whose close failed; retained for session-end retry. */
-let abandoned: Opened | null = null;
+const abandoned = new Set<Opened>();
 let opening: Promise<Opened | null> | null = null;
 /** Serializes this process's core calls (the core also serializes calls per session). */
 let queue: Promise<unknown> = Promise.resolve();
@@ -218,18 +218,14 @@ async function refuseAmbiguousResume($: EngineInterface, at: Opened, messages: r
 
 /** Closes a discarded session, retaining a failed close for session-end retry. */
 async function abandonCore($: EngineInterface): Promise<void> {
-  const at = opened ?? abandoned;
+  if(opened)abandoned.add(opened);
   opened = null;
   opening = Promise.resolve(null);
   if (perStep || fellBack) $.ui.status(undefined);
   fellBack = false;
-  if (!at) return;
-  abandoned = at;
-  try {
-    await core($, at, 'close');
-    if (abandoned === at) abandoned = null;
-  } catch (err) {
-    log($, `close failed; handle retained for cleanup: ${message(err)}`, 'debug');
+  for(const at of [...abandoned]) {
+    try {await core($,at,'close');abandoned.delete(at);}
+    catch(err){log($,`close failed; handle retained for cleanup: ${message(err)}`,'debug');}
   }
 }
 
@@ -332,6 +328,7 @@ export const register: Register = (on, options) => {
   modeOption = options.mode;
 
   on('session.start', async ($, e, next) => {
+    await abandonCore($);
     opening = null;
     opened = null;
     perStep = null;
@@ -455,7 +452,7 @@ export const register: Register = (on, options) => {
           log($, fallbackNotRecorded(message(err)));
           return native;
         }
-        if (replaced.chars > HARD_LIMIT_CHARS) { await abandonCore($); return native; }
+        if (replaced.chars > HARD_LIMIT_CHARS || replaced.budget?.overBudget) { await abandonCore($); return native; }
         const notice = reply.chars > HARD_LIMIT_CHARS
           ? `Context Engine: ${COMPACTION_ONLY_FALLBACK.label} for this compaction. The Working Context exceeded the runner hard limit (${HARD_LIMIT_CHARS} characters); Claude Code compacted it natively.`
           : reply.budget?.overBudget
