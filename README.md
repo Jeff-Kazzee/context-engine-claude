@@ -161,3 +161,5 @@ During a replacement transaction, new main-session tool starts wait until delive
 If a Claude compaction recording attempt has an uncertain outcome or its committed tail cannot be delivered, the adapter stands aside to prevent replay; native fallback results are preserved and never invoked twice. Installation pointers and project config writes refuse linked paths. Rollback retains unowned directories, including empty ones.
 
 Setup operations for this runner are serialized by a private setup lock. If setup is interrupted and reports an existing lock, verify no setup process remains before removing the exact reported lock. Do not run concurrent install or uninstall commands.
+
+See the [release statechart and validation map](docs/context-engine-statechart.md) ([PDF](docs/Context-Engine-Statechart.pdf)) for the published e5da333/644d02b baseline. It does not validate later local fixes.
