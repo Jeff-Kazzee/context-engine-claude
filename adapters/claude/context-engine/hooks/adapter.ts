@@ -321,11 +321,11 @@ export const staleRefsOn = (experiments: string | undefined): boolean => (experi
 export function systemSectionText(wcPath: string, opts: { sessionId: string; staleRefs: boolean; perStep?: boolean }): string {
   const timing = opts.perStep
     ? [
-        `Your earlier conversation is kept in a Working Context file at ${wcPath}. Delivery mode: ${PER_STEP_MODE.describe()}.`,
+        `Your earlier conversation is kept in a Working Context file at ${JSON.stringify(wcPath)}. Delivery mode: ${PER_STEP_MODE.describe()}.`,
         "Before every model step (every request, also between tool calls), the conversation you are given is rebuilt from that file: it arrives as one user message wrapped in <working_context>, followed only by this turn's own messages.",
       ]
     : [
-        `Your earlier conversation is kept in a Working Context file at ${wcPath}. Delivery mode: ${TURN_MODE.describe()}.`,
+        `Your earlier conversation is kept in a Working Context file at ${JSON.stringify(wcPath)}. Delivery mode: ${TURN_MODE.describe()}.`,
         'At the start of each user turn, and whenever the conversation is compacted, the conversation you are given is rebuilt from that file: it arrives as one user message wrapped in <working_context>. Within a turn, new messages pile up after it until the turn ends.',
       ];
   const when = opts.perStep ? 'from your very next step on' : 'from the next user turn on';

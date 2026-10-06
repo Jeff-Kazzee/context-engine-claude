@@ -468,12 +468,13 @@ describe('participation (opt-in pilot, kill switch)', () => {
 describe('participation changes mid-session', () => {
   test('after `context-engine disable` or the kill switch, the next compaction stands aside: the trigger\'s is skipped, others run natively', async ($, on) => {
     const inactive = { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled for /proj"}\n' };
-    const w = world(on, { core: (c) => (c === 'open' ? ok() : inactive) });
+    const w = world(on, { core: (c) => (c === 'open' || c === 'close' ? ok() : inactive) });
     await start($);
     expect(await $.session.compact({ trigger: 'plugin', messages: [] })).toEqual({ skip: expect.stringContaining('inactive') });
     expect(await $.session.compact({ trigger: 'manual', messages: [] })).toEqual(NATIVE);
     expect(w.native).toEqual(['manual']);
-    expect(w.commands()).toEqual(['open', 'record']);
+    await $.session.end({ reason: 'other', sessionId: SID, resume: undefined as never });
+    expect(w.commands()).toEqual(['open', 'record', 'close']);
     expect(w.shown).toEqual([]);
   });
 });
@@ -802,4 +803,35 @@ describe('frames without a frame key', () => {
       expect(p.fetches[0]!.init!.body!).toContain('Go on.');
     });
   }
+});
+
+for (const scenario of [
+  { budget: '40000', chars: 80001, expectedBudget: '15000' },
+  { budget: '1', chars: 1, expectedBudget: undefined },
+  { budget: undefined, chars: 600001, expectedBudget: undefined },
+]) test(`per-step file overflow uses the host step without a custom request (${scenario.budget ?? 'hard limit'})`, async ($, on) => {
+  const w = world(on, { file: 'x'.repeat(scenario.chars) });
+  const p = perStepWorld(on);
+  mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step', ...(scenario.budget ? { CONTEXT_ENGINE_BUDGET_TOKENS: scenario.budget } : {}) });
+  await start($);
+  const { result } = await step($);
+  expect(result.answer).toBe('ENGINE');
+  expect(p.engineSteps).toEqual([1]);
+  expect(p.fetches).toEqual([]);
+  const sync = w.calls.find(c => c.argv[2] === 'sync')!.argv;
+  if (scenario.expectedBudget) expect(sync.slice(-2)).toEqual(['--budget', scenario.expectedBudget]);
+  expect(w.logs.join('\n')).toContain('budget or hard limit');
+});
+
+
+for (const fallback of ['no-auth', 'failed-response']) test(`per-step budget does not subtract an unsent Working Context after ${fallback}`, async ($, on) => {
+  const w = world(on, { file: 'x'.repeat(40000) });
+  const p = perStepWorld(on, fallback === 'no-auth' ? { auth: false } : { status: 500 });
+  mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step', CONTEXT_ENGINE_BUDGET_TOKENS: '60000' });
+  on('session.usage', async () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 100000, tokens: 50000, breakdown: BREAKDOWN } } as never }));
+  await start($);
+  await step($);
+  await step($, { ...STEP, index: 2 });
+  expect(p.engineSteps).toEqual([1, 2]);
+  expect(w.calls.filter(c => c.argv[2] === 'sync').map(c => c.argv.slice(-2))).toEqual([['--budget', '35000'], ['--budget', '35000']]);
 });

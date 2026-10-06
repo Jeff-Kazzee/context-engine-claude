@@ -2,7 +2,7 @@
 
 **Release candidate:** tool-schema prose and fixtures are independently authored here. Publication still requires review of this exact snapshot and its fresh history; see [PROVENANCE.md](PROVENANCE.md).
 
-**Installation/merge hold:** offline companion action tests and main-adapter hook tests pass separately. The test kit forwards compaction action arguments directly to its mock; it does not perform the host's later conversion to a `trigger: 'plugin'` hook event. Interactive delivery across both plugins is unverified. Do not recommend installation or merge this candidate until that host integration and the shared-core update with the Codex owner are verified.
+**Installation/merge hold:** offline companion action tests and main-adapter hook tests pass separately. The test kit forwards compaction action arguments directly to its mock; it does not perform the host's later conversion to a `trigger: 'plugin'` hook event. Interactive delivery across both plugins is unverified. Do not recommend installation or merge this candidate until that host integration and the shared-core update with the Codex owner are verified and Jeff approves this exact head.
 
 **Confirmed unresolved confinement defect:** a concurrent process can swap the Working Context parent directory after validation and redirect a subsequent write. This shared-core correction is assigned to the separate Codex owner. Do not install this candidate until that correction is integrated and reviewed.
 

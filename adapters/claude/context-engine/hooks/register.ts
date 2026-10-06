@@ -85,6 +85,8 @@ type Opened = { sessionId: string; projectRoot: string; workingContext: string; 
 
 /** Set once the core has opened this session; null when the mod stands aside. */
 let opened: Opened | null = null;
+/** A discarded session whose close failed; retained for session-end retry. */
+let abandoned: Opened | null = null;
 let opening: Promise<Opened | null> | null = null;
 /** Serializes this process's core calls (the core also serializes calls per session). */
 let queue: Promise<unknown> = Promise.resolve();
@@ -204,18 +206,39 @@ async function refuseAmbiguousResume($: EngineInterface, at: Opened, messages: r
   if (check.kind === 'refused') throw new LegacyUpgradeRefused(check.text);
 }
 
-/** Stands aside for the rest of the session after a refused upgrade, saying so in the transcript. */
-function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefused | FrameBoundaryError): void {
+/** Closes a discarded session, retaining a failed close for session-end retry. */
+async function abandonCore($: EngineInterface): Promise<void> {
+  const at = opened ?? abandoned;
   opened = null;
   opening = Promise.resolve(null);
+  if (perStep || fellBack) $.ui.status(undefined);
+  fellBack = false;
+  if (!at) return;
+  abandoned = at;
+  try {
+    await core($, at, 'close');
+    if (abandoned === at) abandoned = null;
+  } catch (err) {
+    log($, `close failed; handle retained for cleanup: ${message(err)}`, 'debug');
+  }
+}
+
+/** Stands aside for the rest of the session after a refused boundary. */
+async function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefused | FrameBoundaryError): Promise<void> {
+  await abandonCore($);
   if (perStep || fellBack) $.ui.status(undefined);
   fellBack = false;
   log($, err.message);
 }
 
 /** Builds this step's request: syncs the core first, so the file sent is the committed revision. */
-async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Promise<{ body: StepRequest; revision: number }> {
-  const reply = await core($, at, 'sync');
+async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Promise<{ body: StepRequest; revision: number; deliveredTokens: number }> {
+  const room = await budgetNow($);
+  const budget = room && !room.exhausted ? room.budgetTokens : undefined;
+  const reply = await core($, at, 'sync', undefined, budget);
+  if (room?.exhausted || reply.budget?.overBudget || reply.chars > HARD_LIMIT_CHARS) {
+    throw new Error('Working Context exceeds the per-step budget or hard limit');
+  }
   if (reply.receipt) log($, reply.receipt.text);
   const [fileText, messages, composed, tools, own] = await Promise.all([
     // Before the first commit (revision 0) there is no file yet; after it, a sync leaves one in place.
@@ -225,6 +248,10 @@ async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Prom
     $.tool.list(),
     section($, at),
   ]);
+  // Check the text actually read too: the file may have changed after sync.
+  if (String(fileText).length > HARD_LIMIT_CHARS || (budget !== undefined && Math.ceil(String(fileText).length / 4) > budget)) {
+    throw new Error('Working Context exceeds the per-step budget or hard limit');
+  }
   await refuseAmbiguousResume($, at, messages as ApiMessage[]);
   const body = buildStepRequest({
     model: e.model,
@@ -237,7 +264,7 @@ async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Prom
     ownSection: own,
     tools,
   });
-  return { body, revision: reply.revision };
+  return { body, revision: reply.revision, deliveredTokens: Math.ceil(String(fileText).length / 4) };
 }
 
 /** Sends the step on the session's own auth handle (Claude Code resolves it; the mod never sees a credential). */
@@ -287,12 +314,15 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const at = opened;
     if (e.agentId || !at || !(await perStepMode($))) return yield* next(e);
-    let built: { body: StepRequest; revision: number };
+    let built: { body: StepRequest; revision: number; deliveredTokens: number };
     try {
       built = await buildStep($, at, e);
     } catch (err) {
-      if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) standAsideForUpgrade($, err);
-      else log($, `per-step request not built, so Claude Code sends this step itself: ${message(err)}`);
+      if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) await standAsideForUpgrade($, err);
+      else {
+        if (err instanceof CoreError && err.inactive) await abandonCore($);
+        log($, `per-step request not built, so Claude Code sends this step itself: ${message(err)}`);
+      }
       return yield* next(e);
     }
     const auth = await $.session.authorize();
@@ -308,6 +338,7 @@ export const register: Register = (on, options) => {
       log($, `per-step request failed (${failure}), so Claude Code sends this step itself`);
       return yield* next(e);
     }
+    delivered = built.deliveredTokens;
     const { chunks, result } = stepChunks(response, e);
     for (const c of chunks) yield c;
     return result;
@@ -376,7 +407,7 @@ export const register: Register = (on, options) => {
       if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) {
         // Nothing was recorded and the mod stays out of this session. Ambiguous
         // keyed replays skip scheduled compaction; legacy upgrade keeps its native fallback.
-        standAsideForUpgrade($, err);
+        await standAsideForUpgrade($, err);
         if (e.trigger === 'plugin' && err instanceof FrameBoundaryError) return { skip: 'Context Engine: ambiguous frame; compaction skipped' };
         return next(e);
       }
@@ -389,8 +420,7 @@ export const register: Register = (on, options) => {
       }
       if (err instanceof CoreError && err.inactive) {
         // Disabled mid-session, or the kill switch: stand aside for the rest of the session.
-        opened = null;
-        opening = Promise.resolve(null);
+        await abandonCore($);
         if (perStep || fellBack) $.ui.status(undefined);
         fellBack = false;
         log($, `inactive from now on (${message(err)})`, 'debug');
@@ -415,6 +445,12 @@ export const register: Register = (on, options) => {
   });
 
   on('tool.call', async ($, e, next) => {
+    // Shell input has no trustworthy file_path. Preserve later reads rather
+    // than trying to infer filesystem effects from arbitrary shell syntax.
+    if (opened && !e.agentId && String(e.tool) === 'Bash') {
+      editedThisTurn = true;
+      stubIds.clear();
+    }
     if (opened && !e.agentId && isWorkingContextPath((e as { file_path?: unknown }).file_path, opened.workingContext)) {
       if (String(e.tool) !== 'Read') editedThisTurn = true;
       else if (!editedThisTurn && e.tool_use_id) stubIds.add(e.tool_use_id);
@@ -431,18 +467,10 @@ export const register: Register = (on, options) => {
   });
 
   on('session.end', async ($, e, next) => {
-    const at = opened;
-    opened = null;
+    await abandonCore($);
     opening = null;
     if (perStep || fellBack) $.ui.status(undefined);
     fellBack = false;
-    if (at) {
-      try {
-        await core($, at, 'close');
-      } catch (err) {
-        log($, `close failed: ${message(err)}`, 'debug');
-      }
-    }
     return next(e);
   });
 };

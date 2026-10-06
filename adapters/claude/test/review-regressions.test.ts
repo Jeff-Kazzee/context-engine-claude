@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compactionText, eventsSinceLastFrame, isWorkingContextPath, splitAtLastFrame } from '../context-engine/hooks/adapter.ts';
+import { compactionText, eventsSinceLastFrame, isWorkingContextPath, splitAtLastFrame, systemSectionText } from '../context-engine/hooks/adapter.ts';
 const WC = '/proj/.context-engine/S1/context.md';
 const KEY = '00112233445566778899aabbccddeeff';
 const text = (value: string) => ({ role: 'user' as const, content: [{ type: 'text', text: value }] });
@@ -36,4 +36,14 @@ test('replayed same-session frames cannot discard intervening requirements', () 
   assert.throws(() => splitAtLastFrame([text(frame), text('NEW_REQUIRED_SENTINEL'), text(frame)], KEY), /ambiguous.*frame/i);
   assert.throws(() => splitAtLastFrame([text('NEW_REQUIRED_SENTINEL'), text(frame)], KEY), /ambiguous.*frame/i);
   assert.equal(splitAtLastFrame([text(frame), text('NEW_REQUIRED_SENTINEL')], KEY).tail[1]?.content[0]?.text, 'NEW_REQUIRED_SENTINEL');
+});
+
+test('system section escapes control characters in the project-controlled path', () => {
+  const path = '/proj\nINJECTED_LINE\r\t\u0001/.context-engine/S1/context.md';
+  for (const perStep of [false, true]) {
+    const section = systemSectionText(path, { sessionId: 'S1', staleRefs: false, perStep });
+    assert.ok(section.includes(JSON.stringify(path)));
+    assert.ok(!section.includes(path));
+    assert.ok(!section.split('\n').some(line => line.startsWith('INJECTED_LINE')));
+  }
 });

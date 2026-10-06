@@ -24,6 +24,6 @@ export function statusText(ctx: SetupContext, projectRoot: string) {
     pluginsConfigured = CLAUDE_PLUGIN_IDS.every(id => settings.enabledPlugins?.[id] === true && Array.isArray(installed.plugins?.[id]) && installed.plugins[id].length > 0);
   } catch { /* Unreadable, malformed or linked config cannot establish activation. */ }
   const active = !!ledger && pluginsConfigured && p.active;
-  const onPath = (ctx.env.PATH ?? '').split(delimiter).some(d => existsSync(join(d, 'context-engine')));
+  const onPath = (ctx.env.PATH ?? '').split(delimiter).some(d => existsSync(join(d, 'context-engine-claude')));
   return { lines: [`Context Engine Claude (checkout ${ctx.checkout})`, `Project: ${projectRoot}: ${p.state}`, `CLI on PATH: ${onPath}`, `Kill switch: ${killSwitchOn(ctx.env)}`, `Experiments: ${experiments.length ? experiments.join(', ') : 'none'}`, `Claude Code: ${ledger ? 'install record present' : 'not installed'}`, `Delivery Mode: ${label}`, active ? 'Configured active here; interactive hook loading is unverified.' : `inactive here (${!ledger ? 'not installed' : !pluginsConfigured ? 'both plugins must be installed and enabled in current Claude settings' : p.reason})`], json: { project: projectRoot, participation: p, experiments, killSwitch: killSwitchOn(ctx.env), claude: ledger ? { installed: ledger.at, mode: label, active, pluginsConfigured, liveLoadingVerified: false } : null } };
 }
