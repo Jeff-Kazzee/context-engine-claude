@@ -357,7 +357,7 @@ class Core {
   /** Latch notices before fallible postchecks; retain recovery notices beside newer receipts. */
   private retainReceipt(r: SyncResult): SyncResult {
     const pending = this.pendingReceipt;
-    if (!r.receipt) r.receipt = pending;
+    if (!r.receipt && pending) r.receipt = pending;
     else if (pending && r.receipt !== pending && !r.receipt.text.includes(pending.text)) {
       r.receipt = { ...pending, text: `${pending.text}\n${r.receipt.text}`, ...(r.receipt.stale ? { stale: r.receipt.stale } : {}) };
     }
