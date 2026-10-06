@@ -398,22 +398,30 @@ describe('budget', () => {
     const r = await $.session.compact({ trigger: 'auto', messages: [{ role: 'user' as const, text: 'TURN TEXT', toolUses: [] }] });
     expect(r).toEqual(NATIVE);
     expect(w.native).toEqual(['auto']);
-    expect(w.commands()).toEqual(['open', 'record', 'native-compaction']);
+    expect(w.commands()).toEqual(['open', 'record', 'native-compaction', 'close']);
     const shown = w.shown.join('\n');
     expect(shown).toContain(FALLBACK);
     expect(shown).toContain('was NOT recorded as a Revision');
     expect(shown).toContain('disk full');
-    expect(u.statuses).toEqual([`Context Engine: ${FALLBACK}`]);
+    expect(u.statuses).toEqual([`Context Engine: ${FALLBACK}`, undefined]);
+    const again = await $.session.compact({ trigger: 'plugin', messages: [] });
+    expect('skip' in again && again.skip).toContain('inactive');
+    expect(w.commands()).toEqual(['open', 'record', 'native-compaction', 'close']);
+    expect(w.native).toEqual(['auto']);
   });
 
-  test('a skipped native compaction is passed on, and nothing is committed', async ($, on) => {
+  test('a skipped native compaction is passed on and the adapter stands aside to prevent replay', async ($, on) => {
     usage(on);
     const w = world(on, { core: (c) => (c === 'record' ? ok({ budget: report({ overBudget: true, tier: 0 }) }) : ok()), nativeResult: { skip: 'blocked by a PreCompact hook' } });
     mock.env(on, {});
     await start($);
     const r = await $.session.compact({ trigger: 'auto', messages: [{ role: 'user' as const, text: 'TURN TEXT', toolUses: [] }] });
     expect(r).toEqual({ skip: 'blocked by a PreCompact hook' });
-    expect(w.commands()).toEqual(['open', 'record']);
+    expect(w.commands()).toEqual(['open', 'record', 'close']);
+    const again = await $.session.compact({ trigger: 'plugin', messages: [] });
+    expect('skip' in again && again.skip).toContain('inactive');
+    expect(w.commands()).toEqual(['open', 'record', 'close']);
+    expect(w.native).toEqual(['auto']);
   });
 });
 
