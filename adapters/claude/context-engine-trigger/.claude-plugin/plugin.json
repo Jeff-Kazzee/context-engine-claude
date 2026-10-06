@@ -1,6 +1,6 @@
 {
   "name": "context-engine-trigger",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Context Engine for Claude Code: compacts at each user-turn boundary so the context-engine mod can answer with the Working Context (Full Replacement per user turn; Injection within a turn). Interactive sessions only.",
   "author": {
     "name": "Jeff Kazzee"

@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onRead?: () => void; onAuthorize?: () => void; noAuth?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -23,18 +23,19 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
   const statuses: Array<string | undefined> = [];
   const $ = {
     plugin: { root: '/checkout/adapters/claude/context-engine' },
-    session: { id: async () => 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { throw new Error('unexpected authorization'); } },
+    session: { id: async () => 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
     prompt: { compose: async () => ({ sections: [] }) }, tool: { list: async () => [] },
     ui: { log: (s: string) => logs.push(s), status: (s?: string) => statuses.push(s) },
-    fs: { read: async () => opts.file ?? 'current context' },
+    fs: { read: async () => { opts.onRead?.(); return opts.file ?? 'current context'; } },
     process: { run: async (argv: string[]) => {
-      const command = argv[2]!; calls.push(command); argvCalls.push(argv);
+      const command = argv[2]!; calls.push(command); argvCalls.push(argv); opts.onCommand?.(command);
+      if (command === 'sync' && opts.failSync) throw new Error('synthetic observation failure');
       if (command === 'close' && opts.failClose) throw new Error('injected close failure');
       if ((command === 'record' || command === 'sync') && opts.inactive) return { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled"}', stderr: '' };
-      return command === 'record'
+      return command === 'record' && !opts.recordSuccess
         ? { exitCode: 1, stdout: '{"ok":false,"error":"injected record failure"}', stderr: '' }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, revision: 1, chars: 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; return { messages: [{ role: 'user', text: 'native summary' }] }; });
@@ -43,10 +44,10 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
   const end = () => handlers.get('session.end')!($, {}, async () => ({}));
   const step = async () => {
     await handlers.get('session.start')!($, {}, async () => ({}));
-    const stream = handlers.get('turn.step')!($, { model: 'synthetic', turnId: 't', index: 1 }, async function* () { nativeCalls++; return {}; });
+    const stream = handlers.get('turn.step')!($, { model: 'synthetic', turnId: 't', index: 1 }, async function* () { nativeCalls++; await opts.onNative?.(); return {}; });
     for await (const _ of stream) { /* No real model is called. */ }
   };
-  return { compact, tool, append, end, step, calls, argvCalls, logs, statuses, nativeCalls: () => nativeCalls };
+  return { $, handlers, compact, tool, append, end, step, calls, argvCalls, logs, statuses, nativeCalls: () => nativeCalls };
 }
 
 test('post-open plugin core failure skips native compaction on repeated turns', async () => {
@@ -159,4 +160,98 @@ test('inactive per-step sync closes once and clears status before native deliver
   assert.equal(w.nativeCalls(), 1);
   assert.ok(w.statuses.some(s => s?.includes('EXPERIMENTAL')));
   assert.equal(w.statuses.at(-1), undefined);
+});
+
+const shellRow: adapter.ApiMessage = { role: 'assistant', content: [{ type: 'tool_use', id: 'B', name: 'Bash', input: { command: 'opaque-script' } }] };
+for (const trigger of ['plugin', 'manual', 'auto']) test(`unknown resumed Bash baseline stands aside (${trigger})`, async () => {
+  const w = fixture([shellRow]);
+  const result = await w.compact(trigger);
+  assert.equal(w.calls.includes('record'), false);
+  assert.equal(w.calls.filter(c => c === 'close').length, 1);
+  assert.equal(w.nativeCalls(), trigger === 'plugin' ? 0 : 1);
+  if (trigger === 'plugin') assert.match(result.skip, /ambiguous/);
+});
+test('failed Bash observation stands aside permanently before record', async () => {
+  const w = fixture([shellRow], { failSync: true });
+  await w.compact('plugin'); await w.compact('plugin');
+  assert.deepEqual(w.calls, ['open', 'sync', 'close']);
+});
+test('a changed revision after a proven delivery refuses Bash record', async () => {
+  const messages: adapter.ApiMessage[] = [];
+  const opts = { recordSuccess: true, syncRevision: 1 };
+  const w = fixture(messages, opts);
+  await w.compact('plugin');
+  messages.push(shellRow); opts.syncRevision = 2;
+  await w.compact('plugin');
+  assert.equal(w.calls.filter(c => c === 'record').length, 1);
+  assert.equal(w.calls.filter(c => c === 'close').length, 1);
+});
+test('ordinary Bash output remains recorded after an unchanged proven delivery', async () => {
+  const messages: adapter.ApiMessage[] = [];
+  const w = fixture(messages, { recordSuccess: true });
+  await w.compact('plugin'); messages.push(shellRow);
+  await w.compact('plugin');
+  assert.equal(w.calls.filter(c => c === 'record').length, 2);
+  assert.equal(w.calls.includes('close'), false);
+});
+test('restored Bash observation refuses even an unchanged delivered revision', async () => {
+  const messages: adapter.ApiMessage[] = [];
+  const w = fixture(messages, { recordSuccess: true, restored: true });
+  await w.compact('plugin'); messages.push(shellRow);
+  await w.compact('plugin');
+  assert.equal(w.calls.filter(c => c === 'record').length, 1);
+  assert.equal(w.calls.includes('close'), true);
+});
+test('an active root tool blocks observation and replacement and retains its result', async () => {
+  const w = fixture(); await w.handlers.get('session.start')!(w.$, {}, async () => ({}));
+  let finish!: (value: unknown) => void;
+  const pending = w.handlers.get('tool.call')!(w.$, { tool: 'Bash' }, () => new Promise(resolve => { finish = resolve; }));
+  await w.compact('plugin');
+  assert.deepEqual(w.calls, ['open', 'close']);
+  const original = { content: 'mixed ordinary output', is_error: true };
+  finish(original); assert.equal(await pending, original);
+});
+test('failed Read remains an error through the actual append hook', async () => {
+  const w = fixture(); await w.handlers.get('session.start')!(w.$, {}, async () => ({}));
+  await w.tool({ tool: 'Read', file_path: '/proj/.context-engine/S1/context.md', tool_use_id: 'R' });
+  const row = { message: { content: [{ type: 'tool_result', tool_use_id: 'R', is_error: true, content: 'synthetic missing file' }] } };
+  assert.equal(await w.append(row), row);
+});
+
+for (const at of ['sync', 'read', 'authorize']) test(`root tools starting during ${at} wait until replacement finishes`, async () => {
+  let toolRan = false, pending: Promise<unknown> | undefined;
+  const opts: Parameters<typeof fixture>[1] = { mode: 'per-step', noAuth: true };
+  const w = fixture([], opts);
+  const start = () => {
+    pending ??= w.handlers.get('tool.call')!(w.$, { tool: 'Bash' }, async () => { toolRan = true; return 'original'; });
+    assert.equal(toolRan, false, 'tool cannot mutate the observed Working Context');
+  };
+  if (at === 'sync') opts.onCommand = command => { if (command === 'sync') start(); };
+  if (at === 'read') opts.onRead = start;
+  if (at === 'authorize') opts.onAuthorize = start;
+  await w.step();
+  assert.ok(pending); assert.equal(await pending, 'original'); assert.equal(toolRan, true);
+  assert.equal(w.nativeCalls(), 1);
+});
+for (const trigger of ['plugin', 'manual', 'auto']) test(`fallback read defers root tool and returns native-derived frame once (${trigger})`, async () => {
+  let toolRan = false, pending: Promise<unknown> | undefined;
+  const opts: Parameters<typeof fixture>[1] = { recordSuccess: true, recordChars: 600001 };
+  const w = fixture([], opts);
+  opts.onRead = () => {
+    pending = w.handlers.get('tool.call')!(w.$, { tool: 'Bash' }, async () => { toolRan = true; return 'original'; });
+    assert.equal(toolRan, false);
+  };
+  const result = await w.compact(trigger);
+  assert.ok(result.messages); assert.equal(w.nativeCalls(), 1);
+  assert.equal(await pending, 'original'); assert.equal(toolRan, true);
+});
+
+for (const reentry of ['tool', 'compact']) test(`native per-step delegation releases lease before ${reentry} reentry`, { timeout: 3000 }, async () => {
+  const opts: Parameters<typeof fixture>[1] = { mode: 'per-step', noAuth: true };
+  const w = fixture([], opts);
+  opts.onNative = async () => {
+    if (reentry === 'tool') assert.equal(await w.tool({ tool: 'Read' }).then(() => 'done'), 'done');
+    else await w.compact('plugin');
+  };
+  await w.step(); assert.equal(w.nativeCalls(), 1);
 });

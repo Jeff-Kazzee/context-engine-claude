@@ -217,10 +217,10 @@ export const READ_STUB =
  * standing for the row's own results in order. Null when the row holds no stubbed result.
  */
 export function stubWorkingContextReads(content: readonly Block[], stubIds: ReadonlySet<string>): Block[] | null {
-  if (!content.some((b) => b.type === 'tool_result' && stubIds.has(String(b.tool_use_id)))) return null;
+  if (!content.some((b) => b.type === 'tool_result' && b.is_error !== true && stubIds.has(String(b.tool_use_id)))) return null;
   return content.map((b) => {
     if (b.type !== 'tool_result') return b;
-    if (stubIds.has(String(b.tool_use_id))) return { type: 'tool_result', content: READ_STUB };
+    if (b.is_error !== true && stubIds.has(String(b.tool_use_id))) return { type: 'tool_result', content: READ_STUB };
     return b.is_error === undefined ? { type: 'tool_result', content: b.content } : { type: 'tool_result', content: b.content, is_error: b.is_error };
   });
 }
@@ -384,6 +384,17 @@ export function splitAtLastFrame(messages: readonly ApiMessage[], frameKey: stri
     return { before, tail: [{ role: m.role, content: [...before, ...m.content.slice(at + 1)] }, ...messages.slice(1)] };
   }
   return { before: null, tail: [...messages] };
+}
+
+/** Shell history cannot safely be serialized after an unobserved file edit. */
+export function hasShellTail(messages: readonly ApiMessage[], frameKey: string): boolean {
+  return splitAtLastFrame(messages, frameKey).tail.some(m => m.content.some(b => b.type === 'tool_use' && b.name === 'Bash'));
+}
+
+export function assertShellBoundary(messages: readonly ApiMessage[], frameKey: string, revision: number, lastDelivered: number | undefined, restored = false): void {
+  if (hasShellTail(messages, frameKey) && (restored || (lastDelivered === undefined ? revision > 0 : revision !== lastDelivered))) {
+    throw new FrameBoundaryError('Context Engine: Bash history and a changed or unobserved Working Context are ambiguous; records nothing and leaves this session to Claude Code. Use direct Read/Edit/Write in a fresh session.');
+  }
 }
 
 /** A tool call as one line of text: `[tool_use <name>] <input JSON>`. */

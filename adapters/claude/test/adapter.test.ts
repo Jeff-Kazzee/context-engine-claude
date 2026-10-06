@@ -27,6 +27,7 @@ import {
   compactionText,
   coreArgv,
   eventsSinceLastFrame,
+  assertShellBoundary,
   checkLegacyFrame,
   parseCoreReply,
   stubWorkingContextReads,
@@ -34,6 +35,24 @@ import {
 
 const WC = '/proj/.context-engine/S1/context.md';
 const KEY = '00112233445566778899aabbccddeeff';
+
+test('failed Working Context Read retains its error and actual message', () => {
+  const error = { type: 'tool_result', tool_use_id: 'READ', is_error: true, content: 'SYNTHETIC_MISSING' };
+  const changed = stubWorkingContextReads([error], new Set(['READ']));
+  assert.equal(changed, null, 'no successful echo to rewrite');
+});
+
+test('Bash boundary refuses changed, restored and unknown existing revisions without altering source', () => {
+  const messages: ApiMessage[] = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'EDIT', name: 'Bash', input: { command: "opaque-script" } }] }];
+  const before = JSON.stringify(messages);
+  for (const [revision, baseline, restored] of [[2, 1, false], [1, undefined, false], [1, 1, true]] as const) {
+    assert.throws(() => assertShellBoundary(messages, KEY, revision, baseline, restored), /ambiguous/);
+  }
+  assert.doesNotThrow(() => assertShellBoundary(messages, KEY, 1, 1));
+  assert.doesNotThrow(() => assertShellBoundary(messages, KEY, 0, undefined));
+  assert.doesNotThrow(() => assertShellBoundary([], KEY, 2, undefined));
+  assert.equal(JSON.stringify(messages), before);
+});
 
 test('a fresh conversation preserves reminder and command-looking text without provenance', () => {
   const events = eventsSinceLastFrame(

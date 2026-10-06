@@ -56,6 +56,8 @@ import {
   workingContextBudget,
   coreArgv,
   eventsSinceLastFrame,
+  hasShellTail,
+  assertShellBoundary,
   isWorkingContextPath,
   parseCoreReply,
   staleRefsOn,
@@ -107,6 +109,9 @@ let fellBack = false;
  * resumed session starts again from the floor.
  */
 let delivered: number | undefined;
+let lastDeliveredRevision: number | undefined;
+let executingTools = 0;
+let boundaryGate: Promise<void> | null = null;
 let turnInputs: readonly number[] = [];
 
 /** An ambiguous resume (unkeyed frames only) was refused (adapter.ts checkLegacyFrame); `message` is the receipt. */
@@ -231,19 +236,48 @@ async function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefuse
   log($, err.message);
 }
 
+/** Prevent new root tools from mutating context while a replacement is observed and delivered. */
+async function acquireBoundary(at: Opened): Promise<() => void> {
+  while (boundaryGate) await boundaryGate;
+  assertNoActiveTools();
+  if (opened !== at) throw new FrameBoundaryError('Context Engine: session changed during replacement; records nothing.');
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  boundaryGate = gate;
+  return () => { if (boundaryGate === gate) boundaryGate = null; release(); };
+}
+
+function assertNoActiveTools(): void {
+  if (executingTools > 0) throw new FrameBoundaryError('Context Engine: a tool is still running; records nothing and leaves this session to Claude Code.');
+}
+
+async function observeBoundary($: EngineInterface, at: Opened, messages: ApiMessage[], budget?: number): Promise<CoreReply> {
+  assertNoActiveTools();
+  let reply: CoreReply;
+  try { reply = await core($, at, 'sync', undefined, budget); }
+  catch (err) {
+    if (hasShellTail(messages, at.frameKey)) throw new FrameBoundaryError(`Context Engine: cannot verify the Working Context after Bash; records nothing (${message(err)}).`);
+    throw err;
+  }
+  assertNoActiveTools();
+  assertShellBoundary(messages, at.frameKey, reply.revision, lastDeliveredRevision, reply.receipt?.kind === 'restored');
+  return reply;
+}
+
 /** Builds this step's request: syncs the core first, so the file sent is the committed revision. */
 async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Promise<{ body: StepRequest; revision: number; deliveredTokens: number }> {
+  assertNoActiveTools();
+  const messages = (await $.session.messages({ as: 'api' })) as ApiMessage[];
   const room = await budgetNow($);
   const budget = room && !room.exhausted ? room.budgetTokens : undefined;
-  const reply = await core($, at, 'sync', undefined, budget);
+  const reply = await observeBoundary($, at, messages, budget);
   if (room?.exhausted || reply.budget?.overBudget || reply.chars > HARD_LIMIT_CHARS) {
     throw new Error('Working Context exceeds the per-step budget or hard limit');
   }
   if (reply.receipt) log($, reply.receipt.text);
-  const [fileText, messages, composed, tools, own] = await Promise.all([
+  const [fileText, composed, tools, own] = await Promise.all([
     // Before the first commit (revision 0) there is no file yet; after it, a sync leaves one in place.
     reply.revision === 0 ? $.fs.read(reply.workingContext).catch(() => '') : $.fs.read(reply.workingContext),
-    $.session.messages({ as: 'api' }),
     $.prompt.compose(),
     $.tool.list(),
     section($, at),
@@ -253,6 +287,7 @@ async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Prom
     throw new Error('Working Context exceeds the per-step budget or hard limit');
   }
   await refuseAmbiguousResume($, at, messages as ApiMessage[]);
+  assertNoActiveTools();
   const body = buildStepRequest({
     model: e.model,
     messages: messages as ApiMessage[],
@@ -298,6 +333,8 @@ export const register: Register = (on, options) => {
     stateDir = null;
     fellBack = false;
     delivered = undefined;
+    lastDeliveredRevision = undefined;
+    executingTools = 0;
     turnInputs = [];
     await ensureOpen($);
     return next(e);
@@ -314,34 +351,45 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const at = opened;
     if (e.agentId || !at || !(await perStepMode($))) return yield* next(e);
-    let built: { body: StepRequest; revision: number; deliveredTokens: number };
+    let releaseBoundary: (() => void) | undefined;
+    const releaseLease = () => { releaseBoundary?.(); releaseBoundary = undefined; };
     try {
-      built = await buildStep($, at, e);
-    } catch (err) {
-      if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) await standAsideForUpgrade($, err);
-      else {
-        if (err instanceof CoreError && err.inactive) await abandonCore($);
-        log($, `per-step request not built, so Claude Code sends this step itself: ${message(err)}`);
+      try { releaseBoundary = await acquireBoundary(at); }
+      catch (err) { await standAsideForUpgrade($, err as FrameBoundaryError); releaseLease(); return yield* next(e); }
+      let built: { body: StepRequest; revision: number; deliveredTokens: number };
+      try {
+        built = await buildStep($, at, e);
+      } catch (err) {
+        if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) await standAsideForUpgrade($, err);
+        else {
+          if (err instanceof CoreError && err.inactive) await abandonCore($);
+          log($, `per-step request not built, so Claude Code sends this step itself: ${message(err)}`);
+        }
+        releaseLease(); return yield* next(e);
       }
-      return yield* next(e);
-    }
-    const auth = await $.session.authorize();
-    if (!auth) {
-      log($, 'per-step mode needs the session credential handle and there is none, so Claude Code sends this step itself');
-      return yield* next(e);
-    }
-    const started = Date.now();
-    const { status, response } = await sendStep($, auth, built.body);
-    await logRequest($, at, e, { revision: built.revision, status, ms: Date.now() - started, body: built.body, response });
-    const failure = stepFailure(status, response);
-    if (failure) {
-      log($, `per-step request failed (${failure}), so Claude Code sends this step itself`);
-      return yield* next(e);
-    }
-    delivered = built.deliveredTokens;
-    const { chunks, result } = stepChunks(response, e);
-    for (const c of chunks) yield c;
-    return result;
+      try { assertNoActiveTools(); } catch (err) {
+        await standAsideForUpgrade($, err as FrameBoundaryError);
+        releaseLease(); return yield* next(e);
+      }
+      const auth = await $.session.authorize();
+      if (!auth) {
+        log($, 'per-step mode needs the session credential handle and there is none, so Claude Code sends this step itself');
+        releaseLease(); return yield* next(e);
+      }
+      const started = Date.now();
+      const { status, response } = await sendStep($, auth, built.body);
+      await logRequest($, at, e, { revision: built.revision, status, ms: Date.now() - started, body: built.body, response });
+      const failure = stepFailure(status, response);
+      if (failure) {
+        log($, `per-step request failed (${failure}), so Claude Code sends this step itself`);
+        releaseLease(); return yield* next(e);
+      }
+      delivered = built.deliveredTokens;
+      lastDeliveredRevision = built.revision;
+      const { chunks, result } = stepChunks(response, e);
+      for (const c of chunks) yield c;
+      return result;
+    } finally { releaseLease(); }
   });
 
   on('session.compact', async ($, e, next) => {
@@ -352,14 +400,20 @@ export const register: Register = (on, options) => {
       if (e.trigger === 'plugin') return { skip: 'Context Engine is inactive for this session' };
       return next(e);
     }
+    let releaseBoundary: (() => void) | undefined;
+    const releaseLease = () => { releaseBoundary?.(); releaseBoundary = undefined; };
     let nativeRan = false;
     let nativeResult: Awaited<ReturnType<typeof next>> | undefined;
     try {
+      releaseBoundary = await acquireBoundary(at);
+      assertNoActiveTools();
       const room = await budgetNow($);
       // The core takes only a positive budget; no room at all is the fallback below, never "no budget".
       const budget = room && !room.exhausted ? room.budgetTokens : undefined;
       const messages = (await $.session.messages({ as: 'api' })) as ApiMessage[];
       await refuseAmbiguousResume($, at, messages);
+      if (hasShellTail(messages, at.frameKey)) await observeBoundary($, at, messages, budget);
+      assertNoActiveTools();
       const events = eventsSinceLastFrame(messages, at.workingContext, at.frameKey);
       const reply = await core($, at, 'record', JSON.stringify(events), budget);
       if (reply.receipt) log($, reply.receipt.text);
@@ -370,8 +424,10 @@ export const register: Register = (on, options) => {
         nativeRan = true;
         fellBack = true;
         $.ui.status(FALLBACK_STATUS);
+        releaseLease();
         const native = await next(e);
         nativeResult = native;
+        releaseBoundary = await acquireBoundary(at);
         if (!native.messages) return native;
         let replaced: CoreReply;
         try {
@@ -389,14 +445,18 @@ export const register: Register = (on, options) => {
           ? fallbackNotice({ approxTokensBefore: reply.budget.approxTokens, budgetTokens: reply.budget.budgetTokens, revision: replaced.revision })
           : noRoomNotice({ ...room!, revision: replaced.revision });
         const fileText = String(await $.fs.read(replaced.workingContext));
+        assertNoActiveTools();
         delivered = replaced.budget?.approxTokens;
+        lastDeliveredRevision = replaced.revision;
         log($, notice);
         const notices = [notice, ...(replaced.budget ? [replaced.budget.text] : [])];
         return { messages: [{ role: 'user', text: compactionText(replaced.workingContext, fileText, notices, COMPACTION_ONLY_FALLBACK.label, at.frameKey), toolUses: [] }] };
       }
       const fileText = String(await $.fs.read(reply.workingContext));
       const notices = [...(reply.receipt ? [reply.receipt.text] : []), ...(reply.budget ? [reply.budget.text] : [])];
+      assertNoActiveTools();
       delivered = reply.budget?.approxTokens;
+      lastDeliveredRevision = reply.revision;
       if (fellBack) {
         fellBack = false;
         $.ui.status(perStep ? PER_STEP_STATUS : undefined);
@@ -408,8 +468,9 @@ export const register: Register = (on, options) => {
         // Nothing was recorded and the mod stays out of this session. Ambiguous
         // keyed replays skip scheduled compaction; legacy upgrade keeps its native fallback.
         await standAsideForUpgrade($, err);
+        if (nativeRan) { if (nativeResult) return nativeResult; throw err; }
         if (e.trigger === 'plugin' && err instanceof FrameBoundaryError) return { skip: 'Context Engine: ambiguous frame; compaction skipped' };
-        return next(e);
+        releaseLease(); return next(e);
       }
       if (nativeRan) {
         // Never run Claude Code's compaction twice. If it returned, its result stands (the Revision was
@@ -425,7 +486,7 @@ export const register: Register = (on, options) => {
         fellBack = false;
         log($, `inactive from now on (${message(err)})`, 'debug');
         if (e.trigger === 'plugin') return { skip: 'Context Engine is inactive for this session' };
-        return next(e);
+        releaseLease(); return next(e);
       }
       if (err instanceof CoreError && err.refused) {
         // Another live process holds the session. The per-turn compaction exists only to deliver
@@ -433,29 +494,34 @@ export const register: Register = (on, options) => {
         // natively, so the context cannot overflow.
         log($, `${message(err)}; ${e.trigger === 'plugin' ? 'per-turn compaction skipped' : 'compaction left to Claude Code'}`);
         if (e.trigger === 'plugin') return { skip: 'Context Engine: the session is held by another process' };
-        return next(e);
+        releaseLease(); return next(e);
       }
       if (e.trigger === 'plugin') {
         log($, `per-turn compaction skipped: ${message(err)}`);
         return { skip: 'Context Engine: core unavailable; compaction skipped' };
       }
       log($, `compaction left to Claude Code: ${message(err)}`);
-      return next(e);
-    }
+      releaseLease(); return next(e);
+    } finally { releaseLease(); }
   });
 
   on('tool.call', async ($, e, next) => {
-    // Shell input has no trustworthy file_path. Preserve later reads rather
-    // than trying to infer filesystem effects from arbitrary shell syntax.
-    if (opened && !e.agentId && String(e.tool) === 'Bash') {
-      editedThisTurn = true;
-      stubIds.clear();
-    }
-    if (opened && !e.agentId && isWorkingContextPath((e as { file_path?: unknown }).file_path, opened.workingContext)) {
-      if (String(e.tool) !== 'Read') editedThisTurn = true;
-      else if (!editedThisTurn && e.tool_use_id) stubIds.add(e.tool_use_id);
-    }
-    return next(e);
+    if (!e.agentId) while (boundaryGate) await boundaryGate;
+    const tracked = !!opened && !e.agentId;
+    if (tracked) executingTools++;
+    try {
+      // Shell input has no trustworthy file_path. Preserve later reads rather
+      // than trying to infer filesystem effects from arbitrary shell syntax.
+      if (opened && !e.agentId && String(e.tool) === 'Bash') {
+        editedThisTurn = true;
+        stubIds.clear();
+      }
+      if (opened && !e.agentId && isWorkingContextPath((e as { file_path?: unknown }).file_path, opened.workingContext)) {
+        if (String(e.tool) !== 'Read') editedThisTurn = true;
+        else if (!editedThisTurn && e.tool_use_id) stubIds.add(e.tool_use_id);
+      }
+      return await next(e);
+    } finally { if (tracked) executingTools--; }
   });
 
   on('session.append', { door: 'tool-result' }, async ($, e, next) => {
