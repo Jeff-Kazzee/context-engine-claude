@@ -127,14 +127,14 @@ function stubWorkingContextTraffic(tail: readonly ApiMessage[], wcPath: string):
 const isReminder =(b: Block): boolean => b.type === 'text' && String(b.text ?? '').trimStart().startsWith('<system-reminder>');
 
 /**
- * The conversation split at the last Working Context frame (splitAtLastFrame): `lead` is the context
- * reminders Claude Code put ahead of the frame in the same message (environment, CLAUDE.md, date),
- * `tail` every block after it. With no frame yet the whole conversation is the tail, and its first
+ * The conversation split at its initial Working Context frame (splitAtLastFrame).
+ * Preceding blocks remain in the tail because their spelling cannot establish origin.
+ * With no frame yet the whole conversation is the tail, and its first
  * message's leading reminders are the lead.
  */
 function leadAndTail(messages: readonly ApiMessage[], frameKey: string): { lead: Block[]; tail: ApiMessage[] } {
   const { before, tail } = splitAtLastFrame(messages, frameKey);
-  if (before !== null) return { lead: before.filter(isReminder), tail };
+  if (before !== null) return { lead: [], tail }; // split preserves preceding blocks
   const [first, ...rest] = tail;
   if (!first || first.role !== 'user') return { lead: [], tail };
   const n = first.content.findIndex((b) => !isReminder(b));
@@ -428,4 +428,3 @@ export function perStepOn(env: string | undefined, option: unknown): boolean {
   const v = env !== undefined && env.trim() !== '' ? env : typeof option === 'string' ? option : '';
   return v.trim().toLowerCase() === 'per-step';
 }
-

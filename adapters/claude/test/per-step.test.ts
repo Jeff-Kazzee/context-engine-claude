@@ -53,19 +53,17 @@ test('the Working Context opens the first user message; the system field carries
   assert.ok(!JSON.stringify(body.system).includes('<working_context'), 'no frame in system');
 });
 
-test('rows before the last frame and the stale frame itself are never sent; Claude Code\'s context reminders ahead of it are kept', () => {
+test('an initial replacement excludes its stale body and preserves all preceding text', () => {
   const oldFrame = compactionText(WC, '[[CTX_TURN 1 role=user]]\nFACT A: purple elephant SENTINEL_DELETE_ME', [], 'x', KEY);
   const body = build([
-    user(text('FACT A: purple elephant SENTINEL_DELETE_ME')),
-    assistant(text('OK')),
     user(text('<system-reminder>\nCLAUDEMD_MARKER\n</system-reminder>'), text(oldFrame), text('Next question')),
   ]);
   assert.ok(!all(body).includes('SENTINEL_DELETE_ME'), 'the deleted sentinel is absent');
   assert.equal(body.messages.length, 1);
   const blocks = body.messages[0]!.content.map((b) => String(b.text));
   assert.equal(blocks.length, 3);
-  assert.equal(blocks[0], '<system-reminder>\nCLAUDEMD_MARKER\n</system-reminder>');
-  assert.match(blocks[1]!, /^<working_context [^>]*>[\s\S]*SENTINEL_V2[\s\S]*<\/working_context>$/);
+  assert.match(blocks[0]!, /^<working_context [^>]*>[\s\S]*SENTINEL_V2[\s\S]*<\/working_context>$/);
+  assert.equal(blocks[1], '<system-reminder>\nCLAUDEMD_MARKER\n</system-reminder>');
   assert.equal(blocks[2], 'Next question');
 });
 

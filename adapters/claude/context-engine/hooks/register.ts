@@ -43,6 +43,7 @@ import {
   COMPACTION_ONLY_FALLBACK,
   type ContextBreakdown,
   CoreError,
+  FrameBoundaryError,
   HARD_LIMIT_CHARS,
   FALLBACK_STATUS,
   compactionText,
@@ -204,7 +205,7 @@ async function refuseAmbiguousResume($: EngineInterface, at: Opened, messages: r
 }
 
 /** Stands aside for the rest of the session after a refused upgrade, saying so in the transcript. */
-function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefused): void {
+function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefused | FrameBoundaryError): void {
   opened = null;
   opening = Promise.resolve(null);
   if (perStep || fellBack) $.ui.status(undefined);
@@ -290,7 +291,7 @@ export const register: Register = (on, options) => {
     try {
       built = await buildStep($, at, e);
     } catch (err) {
-      if (err instanceof LegacyUpgradeRefused) standAsideForUpgrade($, err);
+      if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) standAsideForUpgrade($, err);
       else log($, `per-step request not built, so Claude Code sends this step itself: ${message(err)}`);
       return yield* next(e);
     }
@@ -372,9 +373,11 @@ export const register: Register = (on, options) => {
       log($, `${e.trigger} compaction answered from revision ${reply.revision} (${reply.chars} chars, ${events.length} new turns)`, 'debug');
       return { messages: [{ role: 'user', text: compactionText(reply.workingContext, fileText, notices, undefined, at.frameKey), toolUses: [] }] };
     } catch (err) {
-      if (err instanceof LegacyUpgradeRefused) {
-        // Nothing was recorded: Claude Code compacts natively, and the mod stays out of this session.
+      if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) {
+        // Nothing was recorded and the mod stays out of this session. Ambiguous
+        // keyed replays skip scheduled compaction; legacy upgrade keeps its native fallback.
         standAsideForUpgrade($, err);
+        if (e.trigger === 'plugin' && err instanceof FrameBoundaryError) return { skip: 'Context Engine: ambiguous frame; compaction skipped' };
         return next(e);
       }
       if (nativeRan) {
@@ -401,6 +404,10 @@ export const register: Register = (on, options) => {
         log($, `${message(err)}; ${e.trigger === 'plugin' ? 'per-turn compaction skipped' : 'compaction left to Claude Code'}`);
         if (e.trigger === 'plugin') return { skip: 'Context Engine: the session is held by another process' };
         return next(e);
+      }
+      if (e.trigger === 'plugin') {
+        log($, `per-turn compaction skipped: ${message(err)}`);
+        return { skip: 'Context Engine: core unavailable; compaction skipped' };
       }
       log($, `compaction left to Claude Code: ${message(err)}`);
       return next(e);

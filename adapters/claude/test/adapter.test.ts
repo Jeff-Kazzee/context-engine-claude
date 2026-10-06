@@ -35,7 +35,7 @@ import {
 const WC = '/proj/.context-engine/S1/context.md';
 const KEY = '00112233445566778899aabbccddeeff';
 
-test('a fresh conversation becomes one event per role run, reminders and command records left out', () => {
+test('a fresh conversation preserves reminder and command-looking text without provenance', () => {
   const events = eventsSinceLastFrame(
     [
       {
@@ -54,15 +54,16 @@ test('a fresh conversation becomes one event per role run, reminders and command
   assert.deepEqual(
     events.map((e) => [e.role, e.text]),
     [
-      ['user', 'FACT B: The codeword is SENTINEL_V1'],
+      ['user', '<system-reminder>\nCLAUDE.md says hi\n</system-reminder>\nFACT B: The codeword is SENTINEL_V1'],
       ['assistant', 'OK'],
+      ['user', '<command-name>/compact</command-name>'],
     ],
   );
 });
 
-test('only what follows the last Working Context frame is new', () => {
+test('multiple keyed frames refuse an ambiguous recording boundary', () => {
   const frame = (body: string) => compactionText(WC, body, [], TURN_MODE.label, KEY);
-  const events = eventsSinceLastFrame(
+  assert.throws(() => eventsSinceLastFrame(
     [
       { role: 'user', content: [{ type: 'text', text: frame('[[CTX_TURN 1 role=user]]\nold') }] },
       { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
@@ -78,14 +79,7 @@ test('only what follows the last Working Context frame is new', () => {
     ],
     WC,
     KEY,
-  );
-  assert.deepEqual(
-    events.map((e) => [e.role, e.text]),
-    [
-      ['user', 'Next question'],
-      ['assistant', 'Next answer'],
-    ],
-  );
+  ), /ambiguous.*frame/i);
 });
 
 test('tool calls are rendered whole, except on the Working Context file, whose own text is elided', () => {
@@ -142,7 +136,7 @@ test('the echo of a Working Context Read is replaced by a stub; other results in
   assert.equal(stubWorkingContextReads(content, new Set(['t9'])), null, 'nothing to stub: leave the row alone');
 });
 
-test('the core is called as node on the checkout\'s core/cli.ts, found from the plugin root', () => {
+test('the core is called as node on the checkout\'s core/cli.ts, found from the plugin root', { skip: process.platform !== 'linux' && 'supported POSIX/Linux path contract' }, () => {
   const pluginRoot = fileURLToPath(new URL('../context-engine', import.meta.url));
   const argv = coreArgv(pluginRoot, 'open', { sessionId: 'S1', projectRoot: '/proj' });
   assert.equal(argv[0], 'node');
@@ -167,7 +161,7 @@ test('core replies: ok JSON is returned, anything else is an error naming the ca
   );
 });
 
-test('through the real core: in a project nobody enabled, or with the kill switch on, the core stands aside', () => {
+test('through the real core: in a project nobody enabled, or with the kill switch on, the core stands aside', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const f = fixture();
   const pluginRoot = fileURLToPath(new URL('../context-engine', import.meta.url));
   const open = (env: Record<string, string> = {}) => {
@@ -181,7 +175,7 @@ test('through the real core: in a project nobody enabled, or with the kill switc
   assert.equal(open()().revision, 0);
 });
 
-test('through the real core: a mirrored turn comes back framed, a model edit replaces it, a deleted file is restored with a receipt', () => {
+test('through the real core: a mirrored turn comes back framed, a model edit replaces it, a deleted file is restored with a receipt', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const f = fixture();
   setParticipation({ ...f, state: 'on' });
   const pluginRoot = fileURLToPath(new URL('../context-engine', import.meta.url));
@@ -358,7 +352,7 @@ test('the reserve is the largest turn input observed this session, never under t
   assert.equal(at({ contextTokens: 40_000, deliveredTokens: 33_000, observed: [] }).reserveTokens, TURN_RESERVE_FLOOR_TOKENS);
 });
 
-test('through the real core: a Working Context that fits the old budget but not with the turn on top is over budget', () => {
+test('through the real core: a Working Context that fits the old budget but not with the turn on top is over budget', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const f = fixture();
   setParticipation({ ...f, state: 'on' });
   const pluginRoot = fileURLToPath(new URL('../context-engine', import.meta.url));
@@ -479,7 +473,7 @@ const REQUIREMENT = 'NEW REQUIREMENT: SENTINEL_REQUIREMENT';
 const stepFor = (messages: ApiMessage[], wc: string, key: string, fileText: string) =>
   JSON.stringify(buildStepRequest({ model: 'm', messages, wcPath: wc, frameKey: key, fileText, sections: [], ownSection: { id: 'own', scope: 'session', text: 'own' }, tools: [] }));
 
-test('unkeyed frames: a real legacy frame, even one holding a committed revision, is refused with a receipt (never taken for the boundary)', () => {
+test('unkeyed frames: a real legacy frame, even one holding a committed revision, is refused with a receipt (never taken for the boundary)', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const s = legacySession();
   assert.ok(s.revision >= 2);
   const check = checkLegacyFrame(s.conversation, s.key, s.revision);
@@ -487,7 +481,7 @@ test('unkeyed frames: a real legacy frame, even one holding a committed revision
   if (check.kind === 'refused') assert.match(check.text, /frame without a frame key[\s\S]*records nothing[\s\S]*stands aside[\s\S]*Claude Code's own compaction/);
 });
 
-test('unkeyed frames: a pasted copy of a legacy frame after a new requirement is refused, and is no boundary for recording or the per-step request', () => {
+test('unkeyed frames: a pasted copy of a legacy frame after a new requirement is refused, and is no boundary for recording or the per-step request', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const s = legacySession();
   const pasted: ApiMessage[] = [
     ...s.conversation,
@@ -501,7 +495,7 @@ test('unkeyed frames: a pasted copy of a legacy frame after a new requirement is
   assert.ok(stepFor(pasted, s.wc, s.key, readFileSync(s.wc, 'utf8')).includes(REQUIREMENT));
 });
 
-test('unkeyed frames: a foreign-session frame holding this session\'s committed text is never a boundary (recording and per-step)', () => {
+test('unkeyed frames: a foreign-session frame holding this session\'s committed text is never a boundary (recording and per-step)', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const s = legacySession();
   const file = readFileSync(s.wc, 'utf8');
   const foreign = compactionText(s.wc, file, [], TURN_MODE.label, 'ffffffffffffffffffffffffffffffff');
@@ -523,12 +517,12 @@ test('unkeyed frames: a foreign-session frame holding this session\'s committed 
   assert.ok(readFileSync(s.wc, 'utf8').includes(REQUIREMENT), 'the core records it');
 });
 
-test('unkeyed frames: no refusal without a committed Working Context, or once a keyed frame exists', () => {
+test('unkeyed frames: no refusal without a committed Working Context, or once a keyed frame exists', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
   const s = legacySession();
   const quoted: ApiMessage[] = [{ role: 'user', content: [{ type: 'text', text: compactionText(s.wc, 'quoted') }] }];
   assert.deepEqual(checkLegacyFrame(quoted, s.key, 0), { kind: 'none' });
   const keyedAfter: ApiMessage[] = [...quoted, { role: 'user', content: [{ type: 'text', text: compactionText(s.wc, 'current', [], undefined, s.key) }] }];
-  assert.deepEqual(checkLegacyFrame(keyedAfter, s.key, s.revision), { kind: 'none' });
+  assert.throws(() => checkLegacyFrame(keyedAfter, s.key, s.revision), /ambiguous.*frame/i);
   const plain: ApiMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }];
   assert.deepEqual(checkLegacyFrame(plain, s.key, s.revision), { kind: 'none' });
 });

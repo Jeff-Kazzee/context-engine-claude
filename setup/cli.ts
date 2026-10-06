@@ -48,7 +48,7 @@ export async function runSetup(argv: string[]): Promise<number> {
             const lines = install(ctx, spec);
             const label = claudeModeLabel(ctx.env, ctx.claudeHome);
 
-            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Inert until `context-engine enable` in a project (the pilot is opt-in).']);
+            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Inert until `context-engine-claude enable` in a project (the pilot is opt-in).']);
           } else {
             const lines = uninstall(ctx, spec);
             out([`${spec.title}: uninstalled.`, ...lines.map((l) => `  ${l}`)]);

@@ -174,16 +174,9 @@ export function parseCoreReply(r: { exitCode: number; stdout: string; stderr: st
   throw new CoreError(`context-engine failed (exit ${r.exitCode}): ${cause.slice(0, 500)}`);
 }
 
-const REMINDER =/<system-reminder>[\s\S]*?<\/system-reminder>/g;
-
-/** Text Claude Code owns and re-injects itself, or that only records a slash command. */
-const ENGINE_TEXT = ['<local-command-caveat>', '<command-name>', '<command-message>', '<local-command-stdout>', '<local-command-stderr>'];
-
 function renderText(block: Block): string {
-  const text = String(block.text ?? '')
-    .replace(REMINDER, '')
-    .trim();
-  return ENGINE_TEXT.some((p) => text.startsWith(p)) ? '' : text;
+  // API text does not establish runner authorship. Preserve literal markup.
+  return String(block.text ?? '').trim();
 }
 
 function resultText(content: unknown): string {
@@ -196,7 +189,23 @@ function resultText(content: unknown): string {
 
 /** Whether a tool's `file_path` names the Working Context file. */
 export function isWorkingContextPath(path: unknown, wcPath: string): boolean {
-  return typeof path === 'string' && path.replace(/\/+/g, '/') === wcPath;
+  if (typeof path !== 'string' || !path.startsWith('/') || path.endsWith('/') || !wcPath.startsWith('/')) return false;
+  const known = normalize(wcPath).split('/').filter(Boolean);
+  const parts: string[] = [];
+  for (const segment of path.split('/')) {
+    if (!segment) continue;
+    if (segment === '.') {
+      if (parts.length >= known.length) return false; // the file is not a directory
+      continue;
+    }
+    if (segment === '..') {
+      // Only traverse the core's known directory ancestry. An unknown name
+      // could be a symlink, where lexical cancellation changes the target.
+      if (!parts.length || parts.length >= known.length || parts.some((p, i) => p !== known[i])) return false;
+      parts.pop();
+    } else parts.push(segment);
+  }
+  return parts.length === known.length && parts.every((p, i) => p === known[i]);
 }
 
 export const READ_STUB =
@@ -283,8 +292,8 @@ export const FRAME_OPEN = '<working_context file=';
 /**
  * The one user-role message that answers a compaction: the Working Context file as committed,
  * framed as data, with any adapter-authored notices (core receipts) ahead of it. `frameKey` is the
- * session's random id (the core's `open` reply): it marks the frame as this Adapter's own, so text
- * that only looks like a frame is never taken for one (isFrame).
+ * session's random id (the core's `open` reply). It is visible user-message data,
+ * not proof of origin; ambiguous repeated/later frames are refused below.
  */
 export function compactionText(wcPath: string, fileText: string, notices: readonly string[] = [], delivery: string = DELIVERY_LABEL, frameKey?: string): string {
   const body = fileText.trim() === '' ? '(the Working Context file is empty)' : fileText.replace(/\s+$/, '');
@@ -336,9 +345,9 @@ export function systemSectionText(wcPath: string, opts: { sessionId: string; sta
 }
 
 /**
- * Whether a block is a frame this Adapter built for this session: a user-role text block whose first
- * line is a frame opening carrying the session's frame key. A block that merely starts like a frame
- * (a quoted example, a frame pasted from another session) is not one. Without a key nothing is.
+ * Whether a user-role text block carries this session's visible frame marker.
+ * This identifies syntax, not authorship. splitAtLastFrame refuses ambiguous
+ * replay positions before using a marker as a boundary. Without a key nothing is.
  */
 export function isFrame(m: ApiMessage, b: Block, frameKey: string): boolean {
   if (!frameKey || m.role !== 'user' || b.type !== 'text') return false;
@@ -349,16 +358,30 @@ export function isFrame(m: ApiMessage, b: Block, frameKey: string): boolean {
 }
 
 /**
- * Splits Claude Code's conversation at the last Working Context frame (shared by V1 and per-step):
+ * Splits a replacement conversation at its single initial keyed frame (V1 and per-step):
  * `before` is the blocks ahead of the frame in its own message (null when there is no frame yet),
- * `tail` every block after it, as messages. With no frame the whole conversation is the tail.
- * Only this session's keyed frames are boundaries (isFrame); an unkeyed frame never is (checkLegacyFrame).
+ * `tail` includes preceding blocks as well as subsequent conversation, preserving user text.
+ * With no frame the whole conversation is the tail. Multiple/later keyed frames
+ * throw before recording. An unkeyed frame never is a boundary (checkLegacyFrame).
  */
+export class FrameBoundaryError extends Error {}
+
 export function splitAtLastFrame(messages: readonly ApiMessage[], frameKey: string): { before: Block[] | null; tail: ApiMessage[] } {
-  for (let i = messages.length - 1; i >= 0; i--) {
+  const frames: Array<{ message: number; block: number }> = [];
+  for (let i = 0; i < messages.length; i++) {
     const m = messages[i]!;
-    const at = m.content.findLastIndex((b) => isFrame(m, b, frameKey));
-    if (at >= 0) return { before: m.content.slice(0, at), tail: [{ role: m.role, content: m.content.slice(at + 1) }, ...messages.slice(i + 1)] };
+    for (let j = 0; j < m.content.length; j++) if (isFrame(m, m.content[j]!, frameKey)) frames.push({ message: i, block: j });
+  }
+  // A visible session key is not proof of authorship. Replacement starts the
+  // conversation; repeated or later keyed blocks are ambiguous copies.
+  if (frames.length > 1 || (frames[0] && frames[0].message !== 0)) {
+    throw new FrameBoundaryError('Context Engine: ambiguous Working Context frame boundary; records nothing. Start a fresh session rather than replay a keyed frame.');
+  }
+  if (frames[0]) {
+    const m = messages[0]!;
+    const at = frames[0].block;
+    const before = m.content.slice(0, at);
+    return { before, tail: [{ role: m.role, content: [...before, ...m.content.slice(at + 1)] }, ...messages.slice(1)] };
   }
   return { before: null, tail: [...messages] };
 }
@@ -398,7 +421,7 @@ export function eventsSinceLastFrame(messages: readonly ApiMessage[], wcPath: st
         const id = String(b.tool_use_id);
         const name = toolNames.get(id) ?? 'tool';
         if (onWorkingContext.has(id)) return `[tool_result ${name} on the Working Context file: elided]`;
-        return toolResultText(b, name, (t) => t.replace(REMINDER, '').trim());
+        return toolResultText(b, name, (t) => t.trim());
       }
       case 'thinking':
       case 'redacted_thinking':
