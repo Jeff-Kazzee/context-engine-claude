@@ -604,7 +604,11 @@ describe('per-step mode (experimental, opt-in)', () => {
     await step($);
     expect(p.writes.length).toBe(1);
     const w = p.writes[0]!;
-    expect(w.path).toMatch(new RegExp(`^${STATE}/claude-per-step/\\d+-turn-1-1\\.json$`));
+    // The SDK canonicalizes fs.write paths before this mock observes them.
+    // Compare the complete logical fixture path after native representation;
+    // this does not establish support for a real Windows core/state directory.
+    const logicalPath = /^[A-Za-z]:[\\/]/.test(w.path) ? w.path.slice(2).replace(/\\/g, '/') : w.path;
+    expect(logicalPath).toMatch(new RegExp(`^${STATE}/claude-per-step/\\d+-turn-1-1\\.json$`));
     const rec = JSON.parse(w.text);
     expect(rec.kind).toBe('claude-per-step-request');
     expect(rec.status).toBe(200);
