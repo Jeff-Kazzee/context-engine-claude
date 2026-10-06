@@ -2,7 +2,7 @@
 
 **Release candidate:** tool-schema prose and fixtures are independently authored here. Publication still requires review of this exact snapshot and its fresh history; see [PROVENANCE.md](PROVENANCE.md).
 
-**Installation/merge hold:** review fixes are under validation. The offline companion-trigger test currently observes an undefined compaction trigger instead of the main adapter's required `plugin` value. Interactive delivery across both plugins is unverified. Do not recommend installation or merge this candidate until that bridge contract and the shared-core update with the Codex owner are verified.
+**Installation/merge hold:** offline companion action tests and main-adapter hook tests pass separately. The test kit forwards compaction action arguments directly to its mock; it does not perform the host's later conversion to a `trigger: 'plugin'` hook event. Interactive delivery across both plugins is unverified. Do not recommend installation or merge this candidate until that host integration and the shared-core update with the Codex owner are verified.
 
 An experimental, opt-in plugin that lets your agent edit its **Working Context** with ordinary tools. This repository ships only the Claude Code adapter and a pinned shared core. It starts **off in every project**. No default-on recommendation or accuracy gain is claimed.
 
@@ -75,7 +75,7 @@ Both distributions vendor the same core. They retain `context-engine` for compat
 
 Start a new Claude session after enable/disable. Persistent install registers the main mod and interactive companion trigger. Headless `-p`/SDK hosts must send `/compact` between turns. Leave `CONTEXT_ENGINE_CLAUDE_MODE=per-step` unset for the first trial.
 
-The companion now requires the main adapter's composed section and a fresh read-only setup-status check of scoped participation plus both installed/enabled plugins before requesting compaction. This guard does not establish the unresolved trigger value or real request-level delivery. `status` reports current configuration, and explicitly leaves live hook loading unverified. A pre-existing `.context-engine/.gitignore` must be a regular, unlinked file whose last effective rule is `*`; otherwise startup refuses without changing that file. Review and fix that rule locally before retrying.
+The companion now requires the main adapter's composed section and a fresh read-only setup-status check of scoped participation plus both installed/enabled plugins before requesting compaction. This guard does not establish host action-to-hook integration or real request-level delivery. `status` reports current configuration, and explicitly leaves live hook loading unverified. A pre-existing `.context-engine/.gitignore` must be a regular, unlinked file whose last effective rule is `*`; otherwise startup refuses without changing that file. Review and fix that rule locally before retrying.
 
 ## 3. Prove delivery, then enable your intended project
 

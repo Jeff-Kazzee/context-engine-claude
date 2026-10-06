@@ -3,12 +3,15 @@ import { type Engine, expect, mock, test } from 'claude-code/testing';
 import type { On } from 'claude-code';
 
 function world(on: On, active = true, configured = true) {
-  const compactions: string[] = [];
+  const compactions: unknown[] = [];
   const logs: string[] = [];
   on('session.start', async (_$, e) => ({ cwd: e.cwd }));
   on('turn.complete', async (_$, e) => ({ text: e.answer }));
   on('session.compact', async (_$, e) => {
-    compactions.push(String(e.trigger));
+    // The kit forwards action arguments here, without the host's later hook
+    // event. Capture them exactly: the action accepts instructions, not trigger.
+    // Main-adapter tests separately exercise the host's trigger: 'plugin' event.
+    compactions.push(e);
     return { messages: [{ role: 'user' as const, text: 'answered', toolUses: [] }] };
   });
   on('prompt.compose', async () => ({ sections: active ? [{ id: 'context-engine:working-context', text: 'active', scope: 'session' as const }] : [] }));
@@ -28,13 +31,15 @@ const start = async ($: Engine, isInteractive: boolean) => {
   await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] });
 };
 
-test('after a main-loop turn in an interactive session, it compacts once the turn has settled', async ($, on) => {
+test('after a main-loop turn in an interactive session, it requests compaction once the turn has settled', async ($, on) => {
   const w = world(on);
   await start($, true);
   const r = await $.turn.complete(turn());
   expect(r.text).toBe('ok');
+  expect(w.compactions).toEqual([]);
   await w.clock.settle();
-  expect(w.compactions).toEqual(['plugin']);
+  expect(w.compactions).toEqual([{}]);
+  expect(w.logs).toEqual([]);
 });
 
 test('trigger alone stays inert when the main adapter does not publish its section', async ($, on) => {
