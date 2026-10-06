@@ -1,7 +1,7 @@
-// Recall: on-demand, read-only search of one session's Event Log. Takes no lock and never
+// Recall: on-demand, read-only search of one session's Event Log. Takes no session lock and never
 // touches the Working Context or any revision, so the agent can call it from its own shell
 // while the adapter holds the session. Its only write is one appended Event Log line per call
-// (for eval accounting): a single O_APPEND write, like every other Event Log append. Where that
+// (for eval accounting): an O_APPEND write under the shared append lease, completed even on short writes. Where that
 // write is not permitted (Codex's workspace-write sandbox), the result is still returned, marked
 // `accounting: 'skipped'`.
 import { createHash } from 'node:crypto';
@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { appendLog, assertSessionId, layout, readLog, readWorkingContextFile, resolveStateRoot, workingContextRelPath } from './store.ts';
 import type { RunnerEvent } from './session.ts';
 import { approxTokens, formatInt } from './size.ts';
+import { SerializeTimeout } from './lock.ts';
 
 export interface SessionRef {
   projectRoot: string;
@@ -174,10 +175,11 @@ const SKIPPED_NOTE = SKIPPED_NOTE_TEXT;
  */
 function account(log: string, entry: Record<string, unknown>): { accounting?: 'skipped'; note?: string } {
   try {
-    appendLog(log, entry);
+    appendLog(log, entry, { timeoutMs: 0 });
     return {};
   } catch (e) {
-    if (['EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'EDQUOT'].includes((e as NodeJS.ErrnoException).code ?? '')) return { accounting: 'skipped', note: SKIPPED_NOTE };
+    if (e instanceof SerializeTimeout) return { accounting: 'skipped', note: SKIPPED_NOTE };
+    if (['EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'EDQUOT', 'EIO'].includes((e as NodeJS.ErrnoException).code ?? '')) return { accounting: 'skipped', note: SKIPPED_NOTE };
     throw e;
   }
 }
