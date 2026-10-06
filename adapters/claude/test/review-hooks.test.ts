@@ -314,3 +314,16 @@ test('compaction uses the committed reply when the live file changes before deli
   assert.match(result.messages[0].text, /COMMITTED_SNAPSHOT/);
   assert.doesNotMatch(result.messages[0].text, /UNCOMMITTED/);
 });
+
+test('renewed: session start clears edited-read state and stale tool IDs',async()=>{
+ const w=fixture();await w.handlers.get('session.start')!(w.$,{},async()=>({}));
+ const path='/proj/.context-engine/S1/context.md';
+ await w.tool({tool:'Read',file_path:path,tool_use_id:'old'});
+ await w.handlers.get('session.start')!(w.$,{},async()=>({}));
+ const old={message:{content:[{type:'tool_result',tool_use_id:'old',content:'UNRELATED_REUSED_ID'}]}};
+ assert.match(JSON.stringify(await w.append(old)),/UNRELATED_REUSED_ID/);
+ await w.tool({tool:'Bash',command:'synthetic edit'});
+ await w.handlers.get('session.start')!(w.$,{},async()=>({}));
+ await w.tool({tool:'Read',file_path:path,tool_use_id:'new'});
+ assert.doesNotMatch(JSON.stringify(await w.append({message:{content:[{type:'tool_result',tool_use_id:'new',content:'NEW_SESSION_DUPLICATE'}]}})),/NEW_SESSION_DUPLICATE/);
+});

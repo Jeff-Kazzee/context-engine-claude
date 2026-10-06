@@ -341,6 +341,8 @@ export const register: Register = (on, options) => {
     lastDeliveredRevision = undefined;
     executingTools = 0;
     turnInputs = [];
+    editedThisTurn = false;
+    stubIds.clear();
     await ensureOpen($);
     return next(e);
   });
