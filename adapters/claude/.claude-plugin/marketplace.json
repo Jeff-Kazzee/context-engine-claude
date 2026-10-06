@@ -1,0 +1,17 @@
+{
+  "name": "context-engine",
+  "owner": { "name": "Jeff Kazzee" },
+  "description": "Context Engine for Claude Code: Full Replacement per user turn; Injection within a turn.",
+  "plugins": [
+    {
+      "name": "context-engine",
+      "source": "./context-engine",
+      "description": "The mod: answers each compaction with the agent's Working Context as one user-role message."
+    },
+    {
+      "name": "context-engine-trigger",
+      "source": "./context-engine-trigger",
+      "description": "Compacts at each user-turn boundary of an interactive session so the mod can answer."
+    }
+  ]
+}
