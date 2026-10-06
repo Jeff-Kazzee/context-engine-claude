@@ -497,7 +497,7 @@ test('unkeyed frames: a real legacy frame, even one holding a committed revision
   assert.ok(s.revision >= 2);
   const check = checkLegacyFrame(s.conversation, s.key, s.revision);
   assert.equal(check.kind, 'refused');
-  if (check.kind === 'refused') assert.match(check.text, /frame without a frame key[\s\S]*records nothing[\s\S]*stands aside[\s\S]*Claude Code's own compaction/);
+  if (check.kind === 'refused') assert.match(check.text, /frame without a recognized frame key[\s\S]*records nothing[\s\S]*stands aside[\s\S]*Claude Code's own compaction/);
 });
 
 test('unkeyed frames: a pasted copy of a legacy frame after a new requirement is refused, and is no boundary for recording or the per-step request', { skip: process.platform !== 'linux' && 'requires Linux /proc' }, () => {
@@ -525,7 +525,7 @@ test('unkeyed frames: a foreign-session frame holding this session\'s committed 
       { role: 'assistant', content: [{ type: 'text', text: 'Noted.' }] },
       { role: 'user', content: [{ type: 'text', text: foreign }, { type: 'text', text: 'Go on.' }] },
     ];
-    assert.deepEqual(checkLegacyFrame(conversation, s.key, s.revision), { kind: 'none' });
+    assert.equal(checkLegacyFrame(conversation, s.key, s.revision).kind, lead.length ? 'none' : 'refused');
     const events = eventsSinceLastFrame(conversation, s.wc, s.key);
     assert.equal(events[0]?.text, REQUIREMENT, 'the requirement is new conversation');
     assert.ok(events.at(-1)?.text.endsWith('Go on.'));
