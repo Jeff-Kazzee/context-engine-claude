@@ -119,7 +119,7 @@ let executingTools = 0;
 let boundaryGate: Promise<void> | null = null;
 let turnInputs: readonly number[] = [];
 
-/** An ambiguous resume (unkeyed frames only) was refused (adapter.ts checkLegacyFrame); `message` is the receipt. */
+/** An ambiguous resume with no recognized keyed boundary was refused; `message` is the receipt. */
 class LegacyUpgradeRefused extends Error {}
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));

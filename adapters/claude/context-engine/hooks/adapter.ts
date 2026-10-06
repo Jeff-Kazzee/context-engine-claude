@@ -463,37 +463,37 @@ export function eventsSinceLastFrame(messages: readonly ApiMessage[], wcPath: st
 // before it (a new requirement, say) would be dropped. Such a resume is refused: the mod records
 // nothing and stands aside for the session.
 
-/** A user-role text block that opens like a frame and carries no frame key (the pre-key format). */
-function isUnkeyedFrame(m: ApiMessage, b: Block): boolean {
+/** A frame-shaped user block whose key cannot identify this session's boundary. */
+function isUnrecognizedFrame(m: ApiMessage, b: Block, frameKey: string): boolean {
   if (m.role !== 'user' || b.type !== 'text') return false;
   const text = String(b.text ?? '');
   const nl = text.indexOf('\n');
   const firstLine = nl < 0 ? text : text.slice(0, nl);
-  return firstLine.startsWith(FRAME_OPEN) && firstLine.endsWith('>') && !firstLine.includes(' frame="');
+  return firstLine.startsWith(FRAME_OPEN) && firstLine.endsWith('>') && !isFrame(m, b, frameKey);
 }
 
 /**
- * Whether the conversation holds an unkeyed frame and no keyed frame of this session (the cheap
+ * Whether the conversation holds an unrecognized frame and no keyed frame of this session (the cheap
  * first half of checkLegacyFrame: a caller asks the core for its revision only when this is true).
  */
 export function hasOnlyUnkeyedFrames(messages: readonly ApiMessage[], frameKey: string): boolean {
   if (splitAtLastFrame(messages, frameKey).before !== null) return false;
-  return messages.some((m) => m.content.some((b) => isUnkeyedFrame(m, b)));
+  return messages.some((m) => m.content.some((b) => isUnrecognizedFrame(m, b, frameKey)));
 }
 
 export type LegacyCheck = { kind: 'none' } | { kind: 'refused'; text: string };
 
 /**
  * The ambiguous-resume check. 'none': a keyed frame of this session exists (it is the boundary; an
- * unkeyed frame after it is plain conversation), no unkeyed frame is present, or the session has no
+ * unrecognized frame after it is plain conversation), no unrecognized frame is present, or the session has no
  * committed Working Context yet (`revision` 0), so a frame-shaped block is plain text. 'refused': an
- * unkeyed frame is present, no keyed one, and a Working Context is committed, so where the new
+ * unkeyed or differently keyed frame is present, no current keyed one, and a Working Context is committed, so where the new
  * conversation starts cannot be told; nothing may be recorded. `text` is the receipt for the user.
  */
 export function checkLegacyFrame(messages: readonly ApiMessage[], frameKey: string, revision: number): LegacyCheck {
   if (revision <= 0 || !hasOnlyUnkeyedFrames(messages, frameKey)) return { kind: 'none' };
   return {
     kind: 'refused',
-    text: `Context Engine: this conversation holds a Working Context frame without a frame key (from an earlier version of this mod, or a copy of one) and no frame this mod built for this session, so where the new conversation starts cannot be told. Rather than guess (and record context you may have deleted, or drop newer messages), Context Engine records nothing, stands aside for the rest of this session, and Claude Code's own compaction applies. The Working Context file keeps revision ${revision}; a new session uses Context Engine again.`,
+    text: `Context Engine: this conversation holds a Working Context frame without a recognized frame key (from an earlier version, a replaced key, or a copy) and no frame this mod built for this session, so where the new conversation starts cannot be told. Rather than guess (and record context you may have deleted, or drop newer messages), Context Engine records nothing, stands aside for the rest of this session, and Claude Code's own compaction applies. The Working Context file keeps revision ${revision}; a new session uses Context Engine again.`,
   };
 }
