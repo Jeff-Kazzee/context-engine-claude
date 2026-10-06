@@ -1,8 +1,10 @@
 {
   "name": "context-engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Context Engine for Claude Code (V1): the agent's Working Context file replaces the conversation at each user-turn boundary. Full Replacement per user turn; Injection within a turn. Opt-in: EXPERIMENTAL: Full Replacement per model step.",
-  "author": { "name": "Jeff Kazzee" },
+  "author": {
+    "name": "Jeff Kazzee"
+  },
   "license": "MIT",
   "userConfig": {
     "mode": {
@@ -10,7 +12,10 @@
       "title": "Delivery mode",
       "description": "turn (default): Full Replacement per user turn; Injection within a turn. per-step: EXPERIMENTAL: Full Replacement per model step (gaps: hand-written tool schemas, reduced system prompt, no streaming, blind cost ledger). CONTEXT_ENGINE_CLAUDE_MODE overrides this when set.",
       "default": "turn",
-      "options": ["turn", "per-step"]
+      "options": [
+        "turn",
+        "per-step"
+      ]
     }
   }
 }

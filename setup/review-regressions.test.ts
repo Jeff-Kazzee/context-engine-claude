@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '../core/testing.ts';
 import { safeRead, safeWrite } from './files.ts';
@@ -31,9 +33,15 @@ test('pointer publication failure rolls back and can be retried', () => {
   const config = join(w.claudeHome, 'settings.json');
   writeFileSync(config, 'ORIGINAL');
   const ctx: any = { setupDir: join(w.stateDir, 'setup'), env: w.env };
-  const spec: any = { id: 'fake', title: 'Fake', bin: process.execPath, files: [config], watch: [w.claudeHome], namespaced: [], rules: {}, install: [], prepare() { writeFileSync(config, 'CHANGED'); chmodSync(ctx.setupDir, 0o500); } };
-  try { assert.throws(() => install(ctx, spec)); }
-  finally { chmodSync(ctx.setupDir, 0o700); }
+  const spec: any = { id: 'fake', title: 'Fake', bin: process.execPath, files: [config], watch: [w.claudeHome], namespaced: [], rules: {}, install: [], prepare() { writeFileSync(config, 'CHANGED'); } };
+  const nativeWrite = fs.writeFileSync;
+  fs.writeFileSync = ((path: any, ...args: any[]) => {
+    if (path === join(ctx.setupDir, 'fake.json')) throw Object.assign(new Error('synthetic pointer denied'), { code: 'EACCES' });
+    return (nativeWrite as any)(path, ...args);
+  }) as typeof fs.writeFileSync;
+  syncBuiltinESMExports();
+  try { assert.throws(() => install(ctx, spec), /synthetic pointer denied/); }
+  finally { fs.writeFileSync = nativeWrite; syncBuiltinESMExports(); }
   assert.equal(readFileSync(config, 'utf8'), 'ORIGINAL');
   assert.equal(installedLedger(ctx, 'fake'), null);
   spec.prepare = undefined;

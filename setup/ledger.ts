@@ -126,7 +126,9 @@ export function completeLedger(s: Snapshot): Ledger {
     dir: s.dir,
     files,
     createdFiles: created.filter((p) => owned(p) && !p.endsWith('/')).map((path) => ({ path, sha: sha(safeRead(path) ?? Buffer.alloc(0)) })),
-    createdDirs: created.filter((p) => owned(p) && p.endsWith('/')).map((p) => p.slice(0, -1)),
+    // Removing a newly created directory only when empty cannot discard a
+    // concurrent user's contents; namespaced files still require ownership.
+    createdDirs: created.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)),
     retainedPaths: created.filter(p => !owned(p)),
     namespaced: s.namespaced,
     extra: s.extra,
@@ -144,6 +146,9 @@ export function rollbackSnapshot(s: Snapshot, rules: Record<string, Rule>): stri
   const before = new Set(s.listing);
   const l: Ledger = { ...s, createdFiles: [], createdDirs: [] };
   revert(l, rules, Object.fromEntries(s.files.map(f => [f.path, true])));
+  for (const path of list(s.watch).filter(p => !before.has(p) && p.endsWith('/')).sort((a, b) => b.length - a.length)) {
+    try { rmdirSync(path.slice(0, -1)); } catch { /* Retain nonempty/unavailable paths. */ }
+  }
   // Only tracked config and newly created namespaced artifacts are provably ours. Other paths
   // may belong to a concurrent plugin install or backup, so retain them without reading them.
   return list(s.watch).filter(p => !before.has(p));
