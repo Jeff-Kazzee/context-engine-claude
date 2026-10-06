@@ -423,7 +423,8 @@ export const register: Register = (on, options) => {
       const budget = room && !room.exhausted ? room.budgetTokens : undefined;
       const messages = (await $.session.messages({ as: 'api' })) as ApiMessage[];
       await refuseAmbiguousResume($, at, messages);
-      if (hasShellTail(messages, at.frameKey)) await observeBoundary($, at, messages, budget);
+      // This observation reply is discarded; only the delivered record may consume reminder tiers.
+      if (hasShellTail(messages, at.frameKey)) await observeBoundary($, at, messages);
       assertNoActiveTools();
       const events = eventsSinceLastFrame(messages, at.workingContext, at.frameKey);
       uncertainTail = events.length > 0; // A lost response may follow a durable append/commit.

@@ -197,6 +197,19 @@ test('ordinary Bash output remains recorded after an unchanged proven delivery',
   assert.equal(w.calls.filter(c => c === 'record').length, 2);
   assert.equal(w.calls.includes('close'), false);
 });
+
+test('discarded compaction observation leaves budget reminders for the delivered record', async () => {
+  const messages: adapter.ApiMessage[] = [];
+  const w = fixture(messages, { recordSuccess: true, budget: '40000' });
+  await w.compact('plugin'); messages.push(shellRow);
+  await w.compact('plugin');
+  const syncs = w.argvCalls.filter(argv => argv[2] === 'sync');
+  assert.equal(syncs.length, 1, 'the shell observation must run');
+  assert.equal(syncs[0]!.includes('--budget'), false, 'its discarded reply must not consume budget tiers');
+  const records = w.argvCalls.filter(argv => argv[2] === 'record');
+  assert.equal(records.length, 2);
+  assert.ok(records.every(argv => argv.includes('--budget')), 'the delivered record retains its budget check');
+});
 test('restored Bash observation refuses even an unchanged delivered revision', async () => {
   const messages: adapter.ApiMessage[] = [];
   const w = fixture(messages, { recordSuccess: true, restored: true });
