@@ -80,7 +80,9 @@ function items(log: string): Item[] {
   for (const entry of readLog(log)) {
     if (entry.type === 'runner-events') {
       for (const { seq, event } of entry.events as Array<{ seq: number; event: RunnerEvent }>) {
-        out.push({ id: `e${seq}`, role: event.role, text: event.text });
+        // Structured runner evidence lives in the log, outside the materialized Working Context.
+        const evidence = event.item === undefined ? '' : `\n${JSON.stringify(event.item)}`;
+        out.push({ id: `e${seq}`, role: event.role, text: event.text + evidence });
       }
     } else if (entry.type === 'restored' && typeof entry.rejected === 'string') {
       out.push({ id: `r${++rejected}`, role: 'rejected-edit', text: entry.rejected });
@@ -175,7 +177,7 @@ function account(log: string, entry: Record<string, unknown>): { accounting?: 's
     appendLog(log, entry);
     return {};
   } catch (e) {
-    if (['EACCES', 'EPERM', 'EROFS'].includes((e as NodeJS.ErrnoException).code ?? '')) return { accounting: 'skipped', note: SKIPPED_NOTE };
+    if (['EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'EDQUOT'].includes((e as NodeJS.ErrnoException).code ?? '')) return { accounting: 'skipped', note: SKIPPED_NOTE };
     throw e;
   }
 }
@@ -269,7 +271,8 @@ export function readWorkingContext(opts: SessionRef & { part?: number; sha?: str
   const bytes = readWorkingContextFile(path);
   if (bytes === undefined) throw new Error(`no Working Context file at ${rel}`);
   if (bytes === 'not-a-file') throw new Error(`the Working Context ${rel} is a symbolic link or a hard link, which is never read; replace it with a regular file`);
-  const whole = bytes.toString('utf8');
+  // Preserve a UTF-8 BOM too: every returned part must reconstruct the original bytes.
+  const whole = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   const parts = splitParts(whole, READ_MAX_BYTES - HEADER_BYTES);
   const part = opts.part ?? 1;
   if (!Number.isSafeInteger(part) || part < 1 || part > parts.length) throw new Error(`no part ${part} of ${parts.length}: the Working Context has ${parts.length} part(s)`);
