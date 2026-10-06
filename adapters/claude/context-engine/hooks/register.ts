@@ -371,7 +371,12 @@ export const register: Register = (on, options) => {
         await standAsideForUpgrade($, err as FrameBoundaryError);
         releaseLease(); return yield* next(e);
       }
-      const auth = await $.session.authorize();
+      let auth: Awaited<ReturnType<typeof $.session.authorize>>;
+      try { auth = await $.session.authorize(); }
+      catch (err) {
+        log($, `session authorization failed, so Claude Code sends this step itself: ${message(err)}`);
+        releaseLease(); return yield* next(e);
+      }
       if (!auth) {
         log($, 'per-step mode needs the session credential handle and there is none, so Claude Code sends this step itself');
         releaseLease(); return yield* next(e);
@@ -402,6 +407,7 @@ export const register: Register = (on, options) => {
     }
     let releaseBoundary: (() => void) | undefined;
     const releaseLease = () => { releaseBoundary?.(); releaseBoundary = undefined; };
+    let uncertainTail = false;
     let nativeRan = false;
     let nativeResult: Awaited<ReturnType<typeof next>> | undefined;
     try {
@@ -415,7 +421,9 @@ export const register: Register = (on, options) => {
       if (hasShellTail(messages, at.frameKey)) await observeBoundary($, at, messages, budget);
       assertNoActiveTools();
       const events = eventsSinceLastFrame(messages, at.workingContext, at.frameKey);
+      uncertainTail = events.length > 0; // A lost response may follow a durable append/commit.
       const reply = await core($, at, 'record', JSON.stringify(events), budget);
+      uncertainTail = true;
       if (reply.receipt) log($, reply.receipt.text);
       stubIds.clear();
       editedThisTurn = false;
@@ -428,17 +436,18 @@ export const register: Register = (on, options) => {
         const native = await next(e);
         nativeResult = native;
         releaseBoundary = await acquireBoundary(at);
-        if (!native.messages) return native;
+        if (!native.messages) { await abandonCore($); return native; }
         let replaced: CoreReply;
         try {
           replaced = await core($, at, 'native-compaction', JSON.stringify(nativeEvents(native.messages as readonly NativeMessage[])), budget);
         } catch (err) {
           // Fail safe: Claude Code's summary is the compaction either way, so it is returned as it
           // is; only its Revision is missing (the Working Context file still holds the old text).
+          await abandonCore($);
           log($, fallbackNotRecorded(message(err)));
           return native;
         }
-        if (replaced.chars > HARD_LIMIT_CHARS) return native;
+        if (replaced.chars > HARD_LIMIT_CHARS) { await abandonCore($); return native; }
         const notice = reply.chars > HARD_LIMIT_CHARS
           ? `Context Engine: ${COMPACTION_ONLY_FALLBACK.label} for this compaction. The Working Context exceeded the runner hard limit (${HARD_LIMIT_CHARS} characters); Claude Code compacted it natively.`
           : reply.budget?.overBudget
@@ -464,6 +473,13 @@ export const register: Register = (on, options) => {
       log($, `${e.trigger} compaction answered from revision ${reply.revision} (${reply.chars} chars, ${events.length} new turns)`, 'debug');
       return { messages: [{ role: 'user', text: compactionText(reply.workingContext, fileText, notices, undefined, at.frameKey), toolUses: [] }] };
     } catch (err) {
+      if (uncertainTail) {
+        await abandonCore($);
+        log($, `recording outcome or delivery uncertain; standing aside to prevent replay (${message(err)})`);
+        if (nativeRan) { if (nativeResult) return nativeResult; throw err; }
+        if (e.trigger === 'plugin') return { skip: 'Context Engine: recording outcome or delivery uncertain; session inactive' };
+        releaseLease(); return next(e);
+      }
       if (err instanceof LegacyUpgradeRefused || err instanceof FrameBoundaryError) {
         // Nothing was recorded and the mod stays out of this session. Ambiguous
         // keyed replays skip scheduled compaction; legacy upgrade keeps its native fallback.

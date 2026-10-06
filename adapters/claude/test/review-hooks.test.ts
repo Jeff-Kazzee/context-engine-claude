@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onRead?: () => void; onAuthorize?: () => void; noAuth?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onRead?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failRead?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -23,11 +23,11 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
   const statuses: Array<string | undefined> = [];
   const $ = {
     plugin: { root: '/checkout/adapters/claude/context-engine' },
-    session: { id: async () => 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
+    session: { id: async () => 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
     prompt: { compose: async () => ({ sections: [] }) }, tool: { list: async () => [] },
     ui: { log: (s: string) => logs.push(s), status: (s?: string) => statuses.push(s) },
-    fs: { read: async () => { opts.onRead?.(); return opts.file ?? 'current context'; } },
+    fs: { read: async () => { opts.onRead?.(); if (opts.failRead) throw new Error('synthetic read fault'); return opts.file ?? 'current context'; } },
     process: { run: async (argv: string[]) => {
       const command = argv[2]!; calls.push(command); argvCalls.push(argv); opts.onCommand?.(command);
       if (command === 'sync' && opts.failSync) throw new Error('synthetic observation failure');
@@ -38,7 +38,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { mode?: string; fil
         : { exitCode: 0, stdout: JSON.stringify({ ok: true, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
-  const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; return { messages: [{ role: 'user', text: 'native summary' }] }; });
+  const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
   const tool = (e: any) => handlers.get('tool.call')!($, e, async (v: any) => v);
   const append = (e: any) => handlers.get('session.append')!($, e, async (v: any) => v);
   const end = () => handlers.get('session.end')!($, {}, async () => ({}));
@@ -254,4 +254,38 @@ for (const reentry of ['tool', 'compact']) test(`native per-step delegation rele
     else await w.compact('plugin');
   };
   await w.step(); assert.equal(w.nativeCalls(), 1);
+});
+
+for (const trigger of ['plugin', 'manual', 'auto']) test(`post-record frame-read failure cannot replay tail (${trigger})`, async () => {
+  const w = fixture([{ role: 'user', content: [{ type: 'text', text: 'ONCE_ONLY' }] }], { recordSuccess: true, failRead: true });
+  await w.compact(trigger); await w.compact(trigger);
+  assert.equal(w.calls.filter(c => c === 'record').length, 1);
+  assert.equal(w.calls.filter(c => c === 'close').length, 1);
+  assert.equal(w.nativeCalls(), trigger === 'plugin' ? 0 : 2);
+});
+test('authorization rejection delegates native step and releases lease for tools', async () => {
+  const opts: Parameters<typeof fixture>[1] = { mode: 'per-step', failAuthorize: true };
+  const w = fixture([], opts); opts.onNative = async () => { await w.tool({ tool: 'Read' }); };
+  await w.step(); assert.equal(w.nativeCalls(), 1); assert.ok(w.logs.some(s => s.includes('authorization failed')));
+});
+
+test('uncertain nonempty record outcome cannot replay the same transcript tail', async () => {
+  const w = fixture([{ role: 'user', content: [{ type: 'text', text: 'DURABLY_COMMITTED_BUT_REPLY_LOST' }] }]);
+  await w.compact('plugin'); await w.compact('plugin');
+  assert.equal(w.calls.filter(c => c === 'record').length, 1);
+  assert.equal(w.calls.filter(c => c === 'close').length, 1); assert.equal(w.nativeCalls(), 0);
+});
+
+test('native rejection after durable record stands aside without recording or invoking native twice', async () => {
+  const w = fixture([{ role: 'user', content: [{ type: 'text', text: 'COMMIT_ONCE' }] }], { recordSuccess: true, recordChars: 600001, failNative: true });
+  await assert.rejects(w.compact('plugin'), /synthetic native failure/);
+  assert.match((await w.compact('plugin')).skip, /inactive/);
+  assert.equal(w.calls.filter(c => c === 'record').length, 1);
+  assert.equal(w.calls.filter(c => c === 'close').length, 1); assert.equal(w.nativeCalls(), 1);
+});
+test('fallback frame-read failure preserves produced native result and stands aside', async () => {
+  const w = fixture([], { recordSuccess: true, recordChars: 600001, failRead: true });
+  assert.equal((await w.compact('manual')).messages[0].text, 'native summary');
+  assert.match((await w.compact('plugin')).skip, /inactive/);
+  assert.equal(w.calls.filter(c => c === 'record').length, 1); assert.equal(w.nativeCalls(), 1);
 });

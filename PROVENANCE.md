@@ -54,9 +54,9 @@ The core has no runtime dependencies; Node 24 runs the TypeScript sources direct
 
 ## Distribution snapshot and runtime compatibility
 
-`SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. The initial two runner snapshots used the same core version; this review-fix candidate awaits coordinated peer integration as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
+`SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. Both coordinated runtime candidates vendor the same core version and hashes, as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
 
-The 0.1.1 review-fix candidate adds independently authored confinement, lock-cleanup, reference-error and full-digest project-isolation corrections. `SOURCE.json` retains the original base commit and pins the separate core patch commit and current file hashes. Codex integration is owned by a separate agent and remains a coordination gate; until both distributions agree on these core hashes/version, do not deploy them with shared state or describe them as matching releases. The original private source and benchmark environments are unchanged.
+The coordinated 0.1.4 source candidates share all 30 core files and hashes; SOURCE.json pins the common reviewed patch commit and original private snapshot. Core corrections and synthetic tests are independently authored. Both runtime distributions receive the same core changes. Source review and owner approval remain separate from supported-host installation/release acceptance; the original private source and benchmark environments are unchanged.
 
 | Source | Version | License | Use |
 |---|---|---|---|
