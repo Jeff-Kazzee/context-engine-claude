@@ -2,6 +2,8 @@
 
 **Release candidate:** tool-schema prose and fixtures are independently authored here. Publication still requires review of this exact snapshot and its fresh history; see [PROVENANCE.md](PROVENANCE.md).
 
+**Installation/merge hold:** review fixes are under validation. The offline companion-trigger test currently observes an undefined compaction trigger instead of the main adapter's required `plugin` value. Interactive delivery across both plugins is unverified. Do not recommend installation or merge this candidate until that bridge contract and the shared-core update with the Codex owner are verified.
+
 An experimental, opt-in plugin that lets your agent edit its **Working Context** with ordinary tools. This repository ships only the Claude Code adapter and a pinned shared core. It starts **off in every project**. No default-on recommendation or accuracy gain is claimed.
 
 **Full Replacement per user turn; Injection within a turn.** A default-mode edit takes effect at the next user-turn boundary or compaction, not each model step.
@@ -37,6 +39,8 @@ evidence, gaps and disable/uninstall steps. Preserve unrelated work.
 
 ## 1. Check compatibility before installing
 
+Core 0.1.1 uses the full SHA-256 of the canonical project path for private state and participation keys. Legacy 0.1.0 directories and backups are preserved, but are not automatically migrated or merged. Uninstall an old installation using its original checkout/CLI first; retain its backups and session data. After coordinated runner updates, re-enable a fresh disposable project and start a fresh session. Do not mix 0.1.0 and 0.1.1 under a shared `CONTEXT_ENGINE_STATE_DIR`; use a separate, consistently configured state root for a trial. Existing legacy data remains available through the old checkout with its old state root.
+
 - Linux with `/proc` mounted, Node **24 or newer**. Project reads are checked using open file descriptors under `/proc/self/fd`; unavailable support refuses the read. Windows, macOS and constrained T3 runtimes are not validated targets. Do not relax those checks or sandbox permissions to make installation work.
 - Inherited compatibility baseline: **Claude Code 2.1.289 (mods early access)**. These are observed baseline versions, not a guarantee that every machine or newer version works. Inspect `claude --version`, `claude --help` and its plugin help first.
 - Existing normal runner login. Context Engine does not read, copy, store or proxy credentials. Never inspect `~/.claude/.credentials.json` or `~/.codex/auth.json`; use normal runner authentication if needed.
@@ -70,6 +74,8 @@ No runner binary is installed by these commands. `install` defaults to **Claude 
 Both distributions vendor the same core. They retain `context-engine` for compatible session `read`/`recall`/`show` commands. Linking the second checkout replaces that generic PATH alias; **always use `context-engine-claude` for install, enable, status, disable and uninstall**. The runtime aliases remain distinct. Default state/participation storage is shared; if both plugins are installed, enabling a project may activate both. Use a consistent, separate `CONTEXT_ENGINE_STATE_DIR` in each runner's launch environment and matching setup shell when you require separate participation. Never mix core versions under a shared generic alias.
 
 Start a new Claude session after enable/disable. Persistent install registers the main mod and interactive companion trigger. Headless `-p`/SDK hosts must send `/compact` between turns. Leave `CONTEXT_ENGINE_CLAUDE_MODE=per-step` unset for the first trial.
+
+The companion now requires the main adapter's composed section and a fresh read-only setup-status check of scoped participation plus both installed/enabled plugins before requesting compaction. This guard does not establish the unresolved trigger value or real request-level delivery. `status` reports current configuration, and explicitly leaves live hook loading unverified. A pre-existing `.context-engine/.gitignore` must be a regular, unlinked file whose last effective rule is `*`; otherwise startup refuses without changing that file. Review and fix that rule locally before retrying.
 
 ## 3. Prove delivery, then enable your intended project
 
@@ -109,7 +115,7 @@ context-engine-claude uninstall
 npm unlink --global context-engine-claude
 ```
 
-Claude enable/disable and kill-switch changes apply to new sessions; Codex checks participation at each hook. Backups precede config writes. Unchanged configuration is restored byte for byte; if other tools changed it, uninstall removes only Context Engine entries and reports the backup location. Review partial failures before retrying. Unlinking the CLI alone does not uninstall plugin configuration.
+Claude enable/disable and kill-switch changes apply to new sessions; Codex checks participation at each hook. Backups precede config writes. Failed installation restores tracked configuration and removes newly created Context Engine namespaces. New files outside those namespaces may belong to concurrent work, so they are retained and reported on failure and uninstall rather than deleted. Their contents are not copied into the ledger. Unchanged configuration is restored byte for byte; if other tools changed it, uninstall removes only Context Engine entries and reports the backup location. Review partial failures before retrying. Unlinking the CLI alone does not uninstall plugin configuration.
 
 Working Contexts live in `<project>/.context-engine/<session>/`. Revisions, the Event Log, participation and install backups live under `$XDG_STATE_HOME/context-engine` (default `~/.local/state/context-engine`; `CONTEXT_ENGINE_STATE_DIR` overrides). Runner homes honor `CLAUDE_CONFIG_DIR`/`CODEX_HOME`. Uninstall retains those session records. Deletion from Working Context only removes future model input; prior text remains in runner transcripts and the Event Log. Delete retained data only with your own exact-path approval.
 

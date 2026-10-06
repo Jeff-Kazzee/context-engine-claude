@@ -43,6 +43,7 @@ import {
   COMPACTION_ONLY_FALLBACK,
   type ContextBreakdown,
   CoreError,
+  HARD_LIMIT_CHARS,
   FALLBACK_STATUS,
   compactionText,
   fallbackNotice,
@@ -206,7 +207,8 @@ async function refuseAmbiguousResume($: EngineInterface, at: Opened, messages: r
 function standAsideForUpgrade($: EngineInterface, err: LegacyUpgradeRefused): void {
   opened = null;
   opening = Promise.resolve(null);
-  if (perStep) $.ui.status(undefined);
+  if (perStep || fellBack) $.ui.status(undefined);
+  fellBack = false;
   log($, err.message);
 }
 
@@ -331,9 +333,11 @@ export const register: Register = (on, options) => {
       if (reply.receipt) log($, reply.receipt.text);
       stubIds.clear();
       editedThisTurn = false;
-      if (room?.exhausted || reply.budget?.overBudget) {
+      if (room?.exhausted || reply.budget?.overBudget || reply.chars > HARD_LIMIT_CHARS) {
         // Fallback: Claude Code's own summarizer compacts; its result becomes the next Revision.
         nativeRan = true;
+        fellBack = true;
+        $.ui.status(FALLBACK_STATUS);
         const native = await next(e);
         nativeResult = native;
         if (!native.messages) return native;
@@ -343,18 +347,17 @@ export const register: Register = (on, options) => {
         } catch (err) {
           // Fail safe: Claude Code's summary is the compaction either way, so it is returned as it
           // is; only its Revision is missing (the Working Context file still holds the old text).
-          fellBack = true;
-          $.ui.status(FALLBACK_STATUS);
           log($, fallbackNotRecorded(message(err)));
           return native;
         }
-        const notice = reply.budget?.overBudget
+        if (replaced.chars > HARD_LIMIT_CHARS) return native;
+        const notice = reply.chars > HARD_LIMIT_CHARS
+          ? `Context Engine: ${COMPACTION_ONLY_FALLBACK.label} for this compaction. The Working Context exceeded the runner hard limit (${HARD_LIMIT_CHARS} characters); Claude Code compacted it natively.`
+          : reply.budget?.overBudget
           ? fallbackNotice({ approxTokensBefore: reply.budget.approxTokens, budgetTokens: reply.budget.budgetTokens, revision: replaced.revision })
           : noRoomNotice({ ...room!, revision: replaced.revision });
         const fileText = String(await $.fs.read(replaced.workingContext));
         delivered = replaced.budget?.approxTokens;
-        fellBack = true;
-        $.ui.status(FALLBACK_STATUS);
         log($, notice);
         const notices = [notice, ...(replaced.budget ? [replaced.budget.text] : [])];
         return { messages: [{ role: 'user', text: compactionText(replaced.workingContext, fileText, notices, COMPACTION_ONLY_FALLBACK.label, at.frameKey), toolUses: [] }] };
@@ -385,6 +388,8 @@ export const register: Register = (on, options) => {
         // Disabled mid-session, or the kill switch: stand aside for the rest of the session.
         opened = null;
         opening = Promise.resolve(null);
+        if (perStep || fellBack) $.ui.status(undefined);
+        fellBack = false;
         log($, `inactive from now on (${message(err)})`, 'debug');
         if (e.trigger === 'plugin') return { skip: 'Context Engine is inactive for this session' };
         return next(e);
@@ -422,6 +427,8 @@ export const register: Register = (on, options) => {
     const at = opened;
     opened = null;
     opening = null;
+    if (perStep || fellBack) $.ui.status(undefined);
+    fellBack = false;
     if (at) {
       try {
         await core($, at, 'close');

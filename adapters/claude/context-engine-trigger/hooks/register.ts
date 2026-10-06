@@ -10,16 +10,38 @@
 import type { EngineInterface, Register } from 'claude-code';
 
 let interactive = false;
+let composeInput: Parameters<EngineInterface['prompt']['compose']>[0] | undefined;
 
-function compactNow($: EngineInterface): void {
-  $.session.compact({}).catch((err: unknown) => {
+async function compactNow($: EngineInterface): Promise<void> {
+  try {
+    // Positive handshake with the main adapter; a trigger installed on its own stays inert.
+    if (!composeInput) return;
+    const composed = await $.prompt.compose(composeInput);
+    if (!composed.sections.some(s => s.id === 'context-engine:working-context')) return;
+    const projectRoot = await $.session.root();
+    // Recheck participation at callback time, even if the main adapter has cached its open state.
+    const segments: string[] = [];
+    for (const part of `${$.plugin.root}/../../../core/cli.ts`.split('/')) {
+      if (part === '..') segments.pop();
+      else if (part && part !== '.') segments.push(part);
+    }
+    const checked = await $.process.run(['node', `/${segments.join('/')}`, 'status', '--project', projectRoot, '--json'], { cwd: projectRoot, timeoutMs: 60000 });
+    if (checked.exitCode !== 0 || JSON.parse(checked.stdout).claude?.active !== true) return;
+    await $.session.compact({});
+  } catch (err: unknown) {
     $.ui.log(`Context Engine trigger: compaction refused: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' });
-  });
+  }
 }
 
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     interactive = e.isInteractive;
+    composeInput = undefined;
+    return next(e);
+  });
+
+  on('prompt.compose', async (_$, e, next) => {
+    composeInput = e;
     return next(e);
   });
 

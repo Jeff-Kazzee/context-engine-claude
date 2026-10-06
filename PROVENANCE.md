@@ -54,7 +54,9 @@ The core has no runtime dependencies; Node 24 runs the TypeScript sources direct
 
 ## Distribution snapshot and runtime compatibility
 
-`SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. Both runner repositories vendor that same core version; setup is specialized for one runner. Update the two manifests together from one reviewed source commit, never by silently editing one vendored core. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
+`SOURCE.json` pins the original source commit and the SHA-256 of every shared core file. The initial two runner snapshots used the same core version; this review-fix candidate awaits coordinated peer integration as described below. Setup is specialized for one runner. Update both manifests from the same reviewed core patch before shared-state deployment. Original Git history, research notes, prototypes, captured requests and eval/regression evidence are not imported. This distribution makes no new model-performance claims.
+
+The 0.1.1 review-fix candidate adds independently authored confinement, lock-cleanup, reference-error and full-digest project-isolation corrections. `SOURCE.json` retains the original base commit and pins the separate core patch commit and current file hashes. Codex integration is owned by a separate agent and remains a coordination gate; until both distributions agree on these core hashes/version, do not deploy them with shared state or describe them as matching releases. The original private source and benchmark environments are unchanged.
 
 | Source | Version | License | Use |
 |---|---|---|---|

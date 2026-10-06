@@ -24,7 +24,10 @@ test('default install and uninstall change only the selected runner and restore 
   const status = w.ce(['status']); assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.equal(w.ce(['disable']).status, 0);
   assert.equal(w.ce(['uninstall']).status, 0);
-  assert.deepEqual(tree(w.claudeHome), beforeClaude); assert.deepEqual(tree(w.codexHome), beforeCodex);
+  const afterClaude = tree(w.claudeHome);
+  for (const [path, bytes] of Object.entries(beforeClaude)) assert.equal(afterClaude[path], bytes, path);
+  assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
+  assert.deepEqual(tree(w.codexHome), beforeCodex);
   assert.deepEqual(tree(w.project),projectBefore);
   assert.equal(readFileSync(join(w.stateDir,'setup','projects','sibling.json'),'utf8'),'invalid-sibling-project-ledger');
 });
@@ -43,7 +46,8 @@ test('failed installation restores both runner homes and can be retried', () => 
  const w=world(); writeFileSync(join(w.claudeHome,'settings.json'),'{}\n'); writeFileSync(join(w.codexHome,'config.toml'),'# keep\n');
  const a=tree(w.claudeHome),b=tree(w.codexHome);
  const r=w.ce(['install'],{env:{FAKE_CLAUDE_FAIL: 'plugin install'}});
- assert.equal(r.status,1,r.stdout+r.stderr);assert.match(r.stderr,/failed, so nothing was installed/);
- assert.deepEqual(tree(w.claudeHome),a);assert.deepEqual(tree(w.codexHome),b);
+ assert.equal(r.status,1,r.stdout+r.stderr);assert.match(r.stderr,/tracked configuration restored/);
+ const after=tree(w.claudeHome); for(const [path,bytes] of Object.entries(a)) assert.equal(after[path],bytes,path);
+ assert.equal(existsSync(join(w.claudeHome,'plugins','cache','context-engine')),false);assert.deepEqual(tree(w.codexHome),b);
  assert.equal(w.ce(['install']).status,0);assert.equal(w.ce(['install']).status,1);assert.equal(w.ce(['uninstall']).status,0);
 });

@@ -57,6 +57,55 @@ const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: null, isInter
 
 const compose = { model: 'm', promptModel: 'm', surfaces: [], tools: ['Read', 'Edit', 'Write'], outputStyle: null, traits: [] };
 
+for (const trigger of ['plugin', 'manual', 'auto'] as const) {
+  test(`unbudgeted oversized runner append falls back once (${trigger})`, async ($, on) => {
+    mock.env(on, {});
+    const w = world(on, { core: c => c === 'record' ? ok({ chars: 600001 }) : ok() });
+    await start($);
+    const r = await $.session.compact({ trigger, messages: NATIVE.messages });
+    expect(w.native).toEqual([trigger]);
+    expect(w.commands()).toEqual(['open', 'record', 'native-compaction']);
+    expect(r.messages?.[0]?.text).toContain('Compaction-only');
+    expect(r.messages?.[0]?.text).not.toContain('Full Replacement per user turn');
+  });
+}
+
+test('unbudgeted context at the hard limit is delivered without native compaction', async ($, on) => {
+  mock.env(on, {});
+  const w = world(on, { core: c => c === 'record' ? ok({ chars: 600000 }) : ok() });
+  await start($);
+  const r = await $.session.compact({ trigger: 'plugin', messages: [] });
+  expect(w.native).toEqual([]);
+  expect(r.messages?.[0]?.text).toContain('Full Replacement per user turn');
+});
+
+test('oversized native summary is returned natively rather than wrapped into an oversized replacement', async ($, on) => {
+  mock.env(on, {});
+  const w = world(on, { core: c => c === 'record' || c === 'native-compaction' ? ok({ chars: 600001 }) : ok() });
+  await start($);
+  const r = await $.session.compact({ trigger: 'auto', messages: NATIVE.messages });
+  expect(w.native).toEqual(['auto']);
+  expect(r).toEqual(NATIVE);
+});
+
+for (const ending of ['inactive', 'end'] as const) {
+  test(`fallback status is cleared on permanent ${ending}`, async ($, on) => {
+    mock.env(on, {});
+    const statuses: Array<string | undefined> = [];
+    on('ui.status', async (_$, e) => { statuses.push(e.text); return { value: undefined }; });
+    let disabled = false;
+    world(on, { core: c => disabled ? { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled"}' } : c === 'record' ? ok({ chars: 600001 }) : ok() });
+    await start($);
+    await $.session.compact({ trigger: 'plugin', messages: NATIVE.messages });
+    expect(statuses[0]).toContain('Compaction-only');
+    if (ending === 'inactive') {
+      disabled = true;
+      await $.session.compact({ trigger: 'plugin', messages: NATIVE.messages });
+    } else await $.session.end({ sessionId: SID });
+    expect(statuses[statuses.length - 1]).toBeUndefined();
+  });
+}
+
 describe('session start', () => {
   test('opens the core for this session with node on the checkout core/cli.ts', async ($, on) => {
     const w = world(on);

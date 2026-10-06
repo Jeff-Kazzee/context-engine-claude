@@ -4,7 +4,10 @@
 // on demand by regression/setup/run.ts.
 import { test as nodeTest } from 'node:test';
 const applicable = /^(Claude Code:|a failing runner command|install refuses)/;
-const test: typeof nodeTest = ((name: string, ...args: unknown[]) => applicable.test(name) ? (nodeTest as Function)(name, ...args) : undefined) as typeof nodeTest;
+// Retain the inherited cross-runner cases as visible skips, not silently omitted tests.
+const test: typeof nodeTest = ((name: string, ...args: unknown[]) => applicable.test(name)
+  ? (nodeTest as Function)(name, ...args)
+  : (nodeTest.skip as Function)(name, ...args)) as typeof nodeTest;
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,7 +17,7 @@ import { tree, world } from './testing/world.ts';
 
 const SETTINGS = '{"theme": "dark",\n  "env": {"FOO": "1"}}\n';
 
-test('Claude Code: install adds both plugins; uninstall leaves the config dir byte-identical', () => {
+test('Claude Code: install adds both plugins; uninstall restores tracked configuration and retains unowned backups', () => {
   const w = world();
   writeFileSync(join(w.claudeHome, 'settings.json'), SETTINGS);
   const before = tree(w.claudeHome);
@@ -34,7 +37,10 @@ test('Claude Code: install adds both plugins; uninstall leaves the config dir by
 
   const un = w.ce(['uninstall', '--claude']);
   assert.equal(un.status, 0, un.stdout + un.stderr);
-  assert.deepEqual(tree(w.claudeHome), before);
+  const after = tree(w.claudeHome);
+  for (const [path, bytes] of Object.entries(before)) assert.equal(after[path], bytes, path);
+  assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
+  assert.match(un.stdout, /Unowned new paths retained/);
   assert.match(un.stdout, /restored/i);
 });
 
@@ -104,8 +110,11 @@ test('a failing runner command rolls the install back to the exact prior bytes',
   const before = tree(w.claudeHome);
   const r = w.ce(['install', '--claude'], { env: { FAKE_CLAUDE_FAIL: 'plugin install' } });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /failed, so nothing was installed/);
-  assert.deepEqual(tree(w.claudeHome), before);
+  assert.match(r.stderr, /tracked configuration restored/);
+  const after = tree(w.claudeHome);
+  for (const [path, bytes] of Object.entries(before)) assert.equal(after[path], bytes, path);
+  assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
+  assert.match(r.stderr, /unowned new paths retained/);
   assert.equal(w.ce(['install', '--claude']).status, 0, 'and a later install works');
 });
 
