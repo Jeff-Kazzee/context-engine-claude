@@ -530,6 +530,8 @@ export function appendLog(path: string, entry: Record<string, unknown>, opts: { 
 }
 
 function appendLogLocked(path: string, entry: Record<string, unknown>, parentFd: number): void {
+  let appended=false;
+  try {
   truncateTornTailLocked(path, parentFd);
   const line = Buffer.from(`${JSON.stringify({ ...entry, at: new Date().toISOString() })}\n`);
   const fd = verifiedLogDescriptor(path, true, false, parentFd);
@@ -537,18 +539,25 @@ function appendLogLocked(path: string, entry: Record<string, unknown>, parentFd:
     try {
       crashPoint('log-torn');
     } catch (e) {
-      writeSync(fd, line.subarray(0, line.length >> 1));
+      appended=writeSync(fd, line.subarray(0, line.length >> 1))>0;
       throw e;
     }
     // The append lease prevents recall accounting or another writer from interleaving chunks.
     for (let offset = 0; offset < line.length;) {
       const written = writeSync(fd, line, offset, line.length - offset);
       if (written <= 0) throw Object.assign(new Error('incomplete Event Log append; state was not advanced'), { code: 'EIO' });
+      appended=true;
       offset += written;
     }
     fsyncSync(fd);
   } finally {
     closeSync(fd);
+  }
+  // O_CREAT can publish a new name; file fsync alone does not make that name durable.
+  fsyncSync(parentFd);
+  } catch(e) {
+    if(appended&&e instanceof Error)Object.assign(e,{code:'CE_LOG_APPEND_AMBIGUOUS'});
+    throw e;
   }
 }
 
@@ -672,6 +681,7 @@ export function removeDirectoryEntries(dir: string, own: (name: string) => boole
         removed.push(join(dir, name));
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     }
+    if(removed.length)fsyncSync(parent);
     return removed;
   } finally { closeSync(parent); }
 }
