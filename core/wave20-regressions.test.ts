@@ -56,3 +56,14 @@ test('wave20: an ambiguous durable append refuses in-place retry and recovers on
  const r=openSession({...f,sessionId:'S1',runner:'test',hardLimit:10000});assert.equal(r.status,'open');
  assert.equal(r.session.sync().workingContextText.match(/AMBIGUOUS_ONCE/g)?.length,1);r.session.record([{role:'user',text:'AFTER_REOPEN'}]);r.session.close();
 });
+
+test('wave20: failed append lease release also poisons retry until exactly-once recovery',()=>{
+ const {f,s}=opened(),log=join(s.stateDir,'events.jsonl'),native=fs.unlinkSync;let failed=false;
+ fs.unlinkSync=((path:any)=>{if(!failed&&String(path).endsWith('events.jsonl.append.lock')){failed=true;throw Object.assign(new Error('fixture lease release failure'),{code:'EIO'});}native(path);}) as typeof fs.unlinkSync;syncBuiltinESMExports();
+ try {assert.throws(()=>s.record([{role:'user',text:'LEASE_RELEASE_ONCE'}]),/fixture lease release/);}
+ finally {fs.unlinkSync=native;syncBuiltinESMExports();}
+ assert.ok(failed);const after=fs.readFileSync(log);assert.throws(()=>s.record([{role:'user',text:'LEASE_RELEASE_ONCE'}]),/close and reopen/);assert.deepEqual(fs.readFileSync(log),after);
+ // The fixture's failed unlink retained this test process's own lease.
+ fs.unlinkSync(log+'.append.lock');s.close();
+ const r=openSession({...f,sessionId:'S1',runner:'test',hardLimit:10000});assert.equal(r.status,'open');assert.equal(r.session.sync().workingContextText.match(/LEASE_RELEASE_ONCE/g)?.length,1);r.session.close();
+});

@@ -525,8 +525,18 @@ export function readBytes(path: string, maxBytes?: number, expectedPath = resolv
 export function appendLog(path: string, entry: Record<string, unknown>, opts: { timeoutMs?: number } = {}): void {
   const parent = openPrivateDirectory(dirname(resolve(path)));
   if (parent === undefined) throw Object.assign(new Error('Event Log parent is unavailable'), { code: 'ENOENT' });
-  try { serialized(`${path}.append.lock`, () => appendLogLocked(path, entry, parent), { ...opts, parentFd: parent }); }
-  finally { closeSync(parent); }
+  let mayHavePersisted=false;
+  try {
+    try {serialized(`${path}.append.lock`,()=>{
+      try {appendLogLocked(path,entry,parent);mayHavePersisted=true;}
+      catch(e){if((e as NodeJS.ErrnoException).code==='CE_LOG_APPEND_AMBIGUOUS')mayHavePersisted=true;throw e;}
+    },{...opts,parentFd:parent});}
+    finally {closeSync(parent);}
+  } catch(e) {
+    // Lease release and descriptor close can fail after the durable row too.
+    if(mayHavePersisted&&e instanceof Error)Object.assign(e,{code:'CE_LOG_APPEND_AMBIGUOUS'});
+    throw e;
+  }
 }
 
 function appendLogLocked(path: string, entry: Record<string, unknown>, parentFd: number): void {
