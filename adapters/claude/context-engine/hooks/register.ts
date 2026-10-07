@@ -387,8 +387,8 @@ export const register: Register = (on, options) => {
       }
       const started = Date.now();
       const { status, response } = await sendStep($, auth, built.body);
-      await logRequest($, at, e, { revision: built.revision, status, ms: Date.now() - started, body: built.body, response });
       const failure = stepFailure(status, response);
+      await logRequest($, at, e, { revision: built.revision, status, ms: Date.now() - started, body: built.body, response: failure ? { error: 'response refused' } : response });
       if (failure) {
         log($, `per-step request failed (${failure}), so Claude Code sends this step itself`);
         releaseLease(); return yield* next(e);

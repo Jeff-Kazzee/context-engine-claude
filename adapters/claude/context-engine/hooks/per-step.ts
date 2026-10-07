@@ -307,7 +307,8 @@ export function stepFetchInit(auth: { handle: string; kind: string }, body: Step
 /** The response body as far as this mode reads it; a body that is not JSON becomes an error. */
 export function parseStepResponse(text: string): ApiResponse {
   try {
-    return JSON.parse(text) as ApiResponse;
+    const response: unknown = JSON.parse(text);
+    return response !== null && typeof response === 'object' && !Array.isArray(response) ? response as ApiResponse : { error: 'malformed response object' };
   } catch {
     return { error: text.slice(0, 500) };
   }
@@ -315,7 +316,16 @@ export function parseStepResponse(text: string): ApiResponse {
 
 /** Why a response can't be used for the step (Claude Code then sends the step itself), or null. */
 export function stepFailure(status: number, response: ApiResponse): string | null {
-  if (status === 200 && Array.isArray(response.content)) return null;
+  if (status === 200) {
+    if (response === null || typeof response !== 'object' || Array.isArray(response) || !Array.isArray(response.content)) return 'HTTP 200: malformed response content; native fallback';
+    for (const block of response.content) {
+      if (block === null || typeof block !== 'object' || Array.isArray(block) || typeof block.type !== 'string') return 'HTTP 200: malformed response block; native fallback';
+      if (block.type === 'text' && typeof block.text !== 'string') return 'HTTP 200: malformed text block; native fallback';
+      if (block.type === 'tool_use' && (typeof block.id !== 'string' || typeof block.name !== 'string' || !block.input || typeof block.input !== 'object' || Array.isArray(block.input))) return 'HTTP 200: malformed tool block; native fallback';
+    }
+    if ((response.model !== undefined && typeof response.model !== 'string') || (response.usage !== undefined && (!response.usage || typeof response.usage !== 'object' || Array.isArray(response.usage)))) return 'HTTP 200: malformed response metadata; native fallback';
+    return null;
+  }
   return `HTTP ${status}: ${JSON.stringify(response.error ?? response).slice(0, 300)}`;
 }
 

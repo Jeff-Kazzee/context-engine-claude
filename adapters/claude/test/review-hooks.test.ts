@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string; sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -22,8 +22,9 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { sessionId?: string
   const logs: string[] = [];
   const statuses: Array<string | undefined> = [];
   const $ = {
+    http: {fetch: async (_url: string, init: any) => { assert.equal(init.auth,'synthetic-opaque-handle'); return {status:200,text:opts.response}; }},
     plugin: { root: '/checkout/adapters/claude/context-engine' },
-    session: { id: async () => opts.sessionId ?? 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; throw new Error('unexpected authorization'); } },
+    session: { id: async () => opts.sessionId ?? 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; if (opts.response !== undefined) return {handle:'synthetic-opaque-handle',kind:'bearer'}; throw new Error('unexpected authorization'); } },
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
     prompt: { compose: async () => ({ sections: [] }) }, tool: { list: async () => [] },
     ui: { log: (s: string) => logs.push(s), status: (s?: string) => statuses.push(s) },
@@ -338,4 +339,8 @@ test('renewed6: a retained failed close survives later sessions and is retried',
 test('renewed6: over-budget native summary is returned without replacement framing',async()=>{
  const w=fixture([],{recordSuccess:true,recordChars:600001,budget:'1',nativeOverBudget:true});
  const r=await w.compact('manual');assert.equal(r.messages[0].text,'native summary');assert.equal(w.calls.filter(c=>c==='close').length,1);
+});
+
+for(const response of ['null','{"content":[null]}','{"content":[{"type":"text","text":3}]}'])test('wave16: malformed success delegates the next step once: '+response,async()=>{
+  const w=fixture([],{mode:'per-step',response});await w.step();assert.equal(w.nativeCalls(),1);assert.match(w.logs.join('\n'),/failed.*native|failed.*sends this step/);await w.step();assert.equal(w.nativeCalls(),2);
 });

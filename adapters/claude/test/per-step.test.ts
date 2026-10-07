@@ -19,6 +19,12 @@ import {
 } from '../context-engine/hooks/per-step.ts';
 
 const WC = '/proj/.context-engine/S1/context.md';
+test('wave16: malformed successful per-step bodies refuse for native fallback',()=>{
+  for(const text of ['null','[]','{"content":[null]}','{"content":[3]}','{"content":[{"type":"text","text":3}]}','{"content":[{"type":"tool_use","name":"Read"}]}']){
+    const response=parseStepResponse(text);assert.doesNotThrow(()=>stepFailure(200,response));assert.notEqual(stepFailure(200,response),null,text);
+  }
+  const response=parseStepResponse('{"content":[{"type":"text","text":"SAFE"}]}');assert.equal(stepFailure(200,response),null);assert.equal(stepChunks(response,{turnId:'T',index:1,model:'synthetic'}).result.answer,'SAFE');
+});
 const KEY = '00112233445566778899aabbccddeeff';
 const FILE = '[[CTX_TURN 1 role=user]]\nFACT B: SENTINEL_V2\n\n[[CTX_TURN 2 role=assistant]]\nOK';
 const SECTIONS = [
