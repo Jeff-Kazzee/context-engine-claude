@@ -224,7 +224,7 @@ function main(argv: string[]): number {
       s.close();
       return print({ ok: true, closed: true });
     }
-    const result: SyncResult = command === 'record' ? s.record(events, values['max-context-bytes'] ? {maxBytes:positiveInt(values['max-context-bytes'],'--max-context-bytes')} : undefined) : command === 'native-compaction' ? s.nativeCompaction(events) : s.sync();
+    const result: SyncResult = command === 'record' ? s.record(events, values['max-context-bytes'] !== undefined ? {maxBytes:positiveInt(values['max-context-bytes'],'--max-context-bytes')} : undefined) : command === 'native-compaction' ? s.nativeCompaction(events) : s.sync();
     return print({ ok: true, ...result, workingContext: s.workingContextPath, ...(command === 'open' ? { frameKey: s.frameKey } : {}) });
   });
 }
