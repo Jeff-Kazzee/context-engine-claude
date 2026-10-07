@@ -11,6 +11,30 @@ const LABEL = 'Full Replacement per user turn; Injection within a turn';
 const KEY = '0123456789abcdef0123456789abcdef';
 const NATIVE = { messages: [{ role: 'user' as const, text: 'NATIVE SUMMARY', toolUses: [] }] };
 
+const NATIVE_INPUT = [{ role: 'user' as const, text: 'A user turn to compact.', toolUses: [] }];
+
+// The offline bridge forwards internal $.prompt.compose() calls without host inputs.
+// Supply synthetic inputs required by the installed API, then run the actual adapter.
+// This fixture does not prove what inputs a live host supplies.
+const HOST_FIXTURE = {
+  plugins: [{
+    name: 'fixture-prompt-defaults',
+    tier: 'prepend' as const,
+    register(on: On) {
+      on('prompt.compose', async (_$, e, next) => {
+        return next({
+          promptModel: 'fixture-model',
+          outputStyle: null,
+          surfaces: [],
+          tools: [],
+          traits: [],
+          ...e,
+        });
+      });
+    },
+  }],
+};
+
 type Reply = { exitCode: number; stdout: string };
 const ok = (extra: Record<string, unknown> = {}): Reply => ({
   exitCode: 0,
@@ -47,12 +71,16 @@ function world(on: On, script: { core?: (command: string, stdin?: string) => Rep
   });
   on('session.start', async (_$, e) => ({ cwd: e.cwd }));
   on('session.end', async (_$, e) => ({ sessionId: e.sessionId }));
-  on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }));
+  const composeInputs: unknown[] = [];
+  on('prompt.compose', async (_$, e) => {
+    composeInputs.push(e);
+    return { sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] };
+  });
   on('session.compact', async (_$, e) => {
     native.push(e.trigger);
     return (script.nativeResult ?? NATIVE) as typeof NATIVE;
   });
-  return { calls, logs, shown, native, commands: () => calls.map((c) => c.argv[2]) };
+  return { calls, logs, shown, native, composeInputs, commands: () => calls.map((c) => c.argv[2]) };
 }
 
 const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: null, isInteractive: false });
@@ -60,7 +88,7 @@ const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: null, isInter
 const compose = { model: 'm', promptModel: 'm', surfaces: [], tools: ['Read', 'Edit', 'Write'], outputStyle: null, traits: [] };
 
 for (const trigger of ['plugin', 'manual', 'auto'] as const) {
-  test(`unbudgeted oversized runner append falls back once (${trigger})`, async ($, on) => {
+  test(`unbudgeted oversized runner append falls back once (${trigger})`, HOST_FIXTURE, async ($, on) => {
     mock.env(on, {});
     const w = world(on, { core: c => c === 'record' ? ok({ chars: 600001 }) : ok() });
     await start($);
@@ -72,16 +100,16 @@ for (const trigger of ['plugin', 'manual', 'auto'] as const) {
   });
 }
 
-test('unbudgeted context at the hard limit is delivered without native compaction', async ($, on) => {
+test('unbudgeted context at the hard limit is delivered without native compaction', HOST_FIXTURE, async ($, on) => {
   mock.env(on, {});
   const w = world(on, { core: c => c === 'record' ? ok({ chars: 600000 }) : ok() });
   await start($);
-  const r = await $.session.compact({ trigger: 'plugin', messages: [] });
+  const r = await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT });
   expect(w.native).toEqual([]);
   expect(r.messages?.[0]?.text).toContain('Full Replacement per user turn');
 });
 
-test('oversized native summary is returned natively rather than wrapped into an oversized replacement', async ($, on) => {
+test('oversized native summary is returned natively rather than wrapped into an oversized replacement', HOST_FIXTURE, async ($, on) => {
   mock.env(on, {});
   const w = world(on, { core: c => c === 'record' || c === 'native-compaction' ? ok({ chars: 600001 }) : ok() });
   await start($);
@@ -91,7 +119,7 @@ test('oversized native summary is returned natively rather than wrapped into an 
 });
 
 for (const ending of ['inactive', 'end'] as const) {
-  test(`fallback status is cleared on permanent ${ending}`, async ($, on) => {
+  test(`fallback status is cleared on permanent ${ending}`, HOST_FIXTURE, async ($, on) => {
     mock.env(on, {});
     const statuses: Array<string | undefined> = [];
     on('ui.status', async (_$, e) => { statuses.push(e.text); return { value: undefined }; });
@@ -109,7 +137,7 @@ for (const ending of ['inactive', 'end'] as const) {
 }
 
 describe('session start', () => {
-  test('opens the core for this session with node on the checkout core/cli.ts', async ($, on) => {
+  test('opens the core for this session with node on the checkout core/cli.ts', HOST_FIXTURE, async ($, on) => {
     const w = world(on);
     await start($);
     expect(w.calls.length).toBe(1);
@@ -122,12 +150,13 @@ describe('session start', () => {
 });
 
 describe('system prompt', () => {
-  test('adds one static session-scoped section naming the file, the delivery mode and its authority', async ($, on) => {
-    world(on);
+  test('adds one static session-scoped section naming the file, the delivery mode and its authority', HOST_FIXTURE, async ($, on) => {
+    const w = world(on);
     mock.env(on, {});
     await start($);
     const { sections } = await $.prompt.compose(compose);
     expect(sections.length).toBe(2);
+    expect(w.composeInputs[0]).toEqual(compose);
     const mine = sections[1]!;
     expect(mine.scope).toBe('session');
     expect(mine.id).toBe('context-engine:working-context');
@@ -139,7 +168,7 @@ describe('system prompt', () => {
     expect(again.sections[1]!.text).toBe(mine.text);
   });
 
-  test('carries the recall guidance for this session; stale-refs guidance only with that experiment on', async ($, on) => {
+  test('carries the recall guidance for this session; stale-refs guidance only with that experiment on', HOST_FIXTURE, async ($, on) => {
     world(on);
     mock.env(on, {});
     await start($);
@@ -148,7 +177,7 @@ describe('system prompt', () => {
     expect(off).not.toContain('context-engine cite');
   });
 
-  test('stale-refs guidance appears when CONTEXT_ENGINE_EXPERIMENTS includes stale-refs', async ($, on) => {
+  test('stale-refs guidance appears when CONTEXT_ENGINE_EXPERIMENTS includes stale-refs', HOST_FIXTURE, async ($, on) => {
     world(on);
     mock.env(on, { CONTEXT_ENGINE_EXPERIMENTS: 'other,stale-refs' });
     await start($);
@@ -158,7 +187,7 @@ describe('system prompt', () => {
 
 describe('compaction', () => {
   for (const trigger of ['plugin', 'manual', 'auto'] as const) {
-    test(`a ${trigger} compaction is answered with the Working Context as one user message, no summarizer`, async ($, on) => {
+    test(`a ${trigger} compaction is answered with the Working Context as one user message, no summarizer`, HOST_FIXTURE, async ($, on) => {
       const w = world(on, {
         messages: [
           { role: 'user', content: [{ type: 'text', text: 'FACT B: SENTINEL_V1' }] },
@@ -166,7 +195,7 @@ describe('compaction', () => {
         ],
       });
       await start($);
-      const r = await $.session.compact({ trigger, messages: [] });
+      const r = await $.session.compact({ trigger, messages: NATIVE_INPUT });
       expect(w.native).toEqual([]);
       expect(w.commands()).toEqual(['open', 'record']);
       expect(JSON.parse(w.calls[1]!.stdin!).map((e: { role: string; text: string }) => [e.role, e.text])).toEqual([
@@ -183,30 +212,30 @@ describe('compaction', () => {
     });
   }
 
-  test('a core receipt rides in the frame and is logged', async ($, on) => {
+  test('a core receipt rides in the frame and is logged', HOST_FIXTURE, async ($, on) => {
     const receipt = { kind: 'restored', revision: 2, reason: 'missing', chars: 40, text: 'Context Engine: your Working Context edit was not applied (the file was missing).' };
     const w = world(on, { core: (c) => (c === 'record' ? ok({ receipt }) : ok()) });
     await start($);
-    const r = await $.session.compact({ trigger: 'manual', messages: [] });
+    const r = await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     const text = 'messages' in r ? r.messages![0]!.text : '';
     expect(text).toContain(receipt.text);
     expect(w.logs.join('\n')).toContain(receipt.text);
   });
 
-  test('when the core fails, Claude Code compacts natively and the error is logged', async ($, on) => {
+  test('when the core fails, Claude Code compacts natively and the error is logged', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: (c) => (c === 'record' ? { exitCode: 1, stdout: '{"ok":false,"error":"disk on fire"}\n' } : ok()) });
     await start($);
-    const r = await $.session.compact({ trigger: 'manual', messages: [] });
+    const r = await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     expect(r).toEqual(NATIVE);
     expect(w.native).toEqual(['manual']);
     expect(w.logs.join('\n')).toContain('disk on fire');
   });
 
-  test('precompute and subagent compactions are left to Claude Code', async ($, on) => {
+  test('precompute and subagent compactions are left to Claude Code', HOST_FIXTURE, async ($, on) => {
     const w = world(on);
     await start($);
-    await $.session.compact({ trigger: 'precompute', messages: [] });
-    await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: [] });
+    await $.session.compact({ trigger: 'precompute', messages: NATIVE_INPUT });
+    await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: NATIVE_INPUT });
     expect(w.native).toEqual(['precompute', 'auto']);
     expect(w.commands()).toEqual(['open']);
   });
@@ -248,12 +277,12 @@ function usage(on: On, tokens: Array<number | undefined> = [77_000], breakdown: 
 const report = (over: Record<string, unknown>) => ({ budgetTokens: 50_000, approxTokens: 20_000, percent: 40, overBudget: false, tier: 25, urgent: false, text: 'Context Engine: Working Context ~20,000 tokens of its ~50,000-token budget (40%; approx., chars/4).\nContext Engine: the Working Context has passed 25% of its budget.', ...over });
 
 describe('budget', () => {
-  test('the core is given the Working Context budget (auto-compact threshold minus the Pinned Prefix and the turn reserve), and its readout rides in the frame', async ($, on) => {
+  test('the core is given the Working Context budget (auto-compact threshold minus the Pinned Prefix and the turn reserve), and its readout rides in the frame', HOST_FIXTURE, async ($, on) => {
     const u = usage(on);
     const w = world(on, { core: (c) => (c === 'record' ? ok({ budget: report({}) }) : ok()) });
     mock.env(on, {});
     await start($);
-    const r = await $.session.compact({ trigger: 'manual', messages: [] });
+    const r = await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     const record = w.calls.find((c) => c.argv[2] === 'record')!;
     // 67,000 - 17,000 - the floor (8,000): no turn has been observed yet.
     expect(record.argv.slice(-2)).toEqual(['--budget', '42000']);
@@ -265,20 +294,20 @@ describe('budget', () => {
     expect(w.native).toEqual([]);
   });
 
-  test('without a breakdown or CONTEXT_ENGINE_BUDGET_TOKENS there is no budget: the frame is delivered as before', async ($, on) => {
+  test('without a breakdown or CONTEXT_ENGINE_BUDGET_TOKENS there is no budget: the frame is delivered as before', HOST_FIXTURE, async ($, on) => {
     on('session.usage', async () => {
       throw new Error('no usage here');
     });
     const w = world(on);
     mock.env(on, {});
     await start($);
-    const r = await $.session.compact({ trigger: 'manual', messages: [] });
+    const r = await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     expect(w.calls.find((c) => c.argv[2] === 'record')!.argv).not.toContain('--budget');
     expect('messages' in r && r.messages![0]!.text.startsWith('<working_context')).toBe(true);
   });
 
   for (const trigger of ['plugin', 'manual', 'auto'] as const) {
-    test(`a ${trigger} compaction whose Working Context alone is over budget falls back to Claude Code's summarizer, labelled Compaction-only`, async ($, on) => {
+    test(`a ${trigger} compaction whose Working Context alone is over budget falls back to Claude Code's summarizer, labelled Compaction-only`, HOST_FIXTURE, async ($, on) => {
       const u = usage(on);
       const w = world(on, {
         core: (c) =>
@@ -308,7 +337,7 @@ describe('budget', () => {
     });
   }
 
-  test('no room left at all (threshold minus Pinned Prefix minus turn reserve is not positive) falls back to Claude Code\'s summarizer, labelled Compaction-only', async ($, on) => {
+  test('no room left at all (threshold minus Pinned Prefix minus turn reserve is not positive) falls back to Claude Code\'s summarizer, labelled Compaction-only', HOST_FIXTURE, async ($, on) => {
     // 20,000 threshold - 15,000 Pinned Prefix - 8,000 reserve floor = -3,000.
     const tight = { ...BREAKDOWN, autoCompactThreshold: 20_000, categories: [{ name: 'System prompt', tokens: 3_000, kind: 'used' }, { name: 'System tools', tokens: 12_000, kind: 'used' }, { name: 'Messages', tokens: 4_000, kind: 'used' }] };
     const u = usage(on, [undefined], tight);
@@ -330,7 +359,7 @@ describe('budget', () => {
     expect(u.statuses).toEqual([`Context Engine: ${FALLBACK}`]);
   });
 
-  test('each compaction keeps room for the turn: the reserve is the input observed on top of the last delivered Working Context', async ($, on) => {
+  test('each compaction keeps room for the turn: the reserve is the input observed on top of the last delivered Working Context', HOST_FIXTURE, async ($, on) => {
     // Claude Code's last request before each compaction: 30,000 (no Working Context delivered yet),
     // 49,000, 45,000 (a smaller turn), then none reported (nothing answered since the last compaction).
     usage(on, [30_000, 49_000, 45_000, undefined]);
@@ -339,14 +368,14 @@ describe('budget', () => {
     const w = world(on, { core: (c) => (c === 'record' ? ok({ budget: report({ approxTokens: delivered[n++] }) }) : ok()) });
     mock.env(on, {});
     await start($);
-    for (let i = 0; i < 4; i++) await $.session.compact({ trigger: 'manual', messages: [] });
+    for (let i = 0; i < 4; i++) await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     const budgets = w.calls.filter((c) => c.argv[2] === 'record').map((c) => c.argv.at(-1));
     // 1st: the floor, 67,000 - 17,000 - 8,000. 2nd: turn 49,000 - 17,000 - 20,000 = 12,000 reserved.
     // 3rd: turn 45,000 - 17,000 - 21,000 = 7,000; the largest seen (12,000) still holds. 4th: no new turn.
     expect(budgets).toEqual(['42000', '38000', '38000', '38000']);
   });
 
-  test('after a fallback the turn is measured on top of the summary that was delivered', async ($, on) => {
+  test('after a fallback the turn is measured on top of the summary that was delivered', HOST_FIXTURE, async ($, on) => {
     usage(on, [77_000, 40_000]);
     let first = true;
     const w = world(on, {
@@ -369,7 +398,7 @@ describe('budget', () => {
     expect(records).toEqual(['42000', '28000']);
   });
 
-  test('the next compaction inside the budget is Full Replacement again, and the status line says so', async ($, on) => {
+  test('the next compaction inside the budget is Full Replacement again, and the status line says so', HOST_FIXTURE, async ($, on) => {
     const u = usage(on);
     let over = true;
     const w = world(on, {
@@ -379,13 +408,13 @@ describe('budget', () => {
     await start($);
     await $.session.compact({ trigger: 'manual', messages: [{ role: 'user' as const, text: 'TURN TEXT', toolUses: [] }] });
     over = false;
-    const r = await $.session.compact({ trigger: 'manual', messages: [] });
+    const r = await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
     expect(w.native).toEqual(['manual']);
     expect('messages' in r && r.messages![0]!.text).toStartWith(`<working_context file="${WC}" delivery="${LABEL}" frame="${KEY}">`);
     expect(u.statuses).toEqual([`Context Engine: ${FALLBACK}`, undefined]);
   });
 
-  test('when recording the native summary as a Revision fails, the native result is still returned and the receipt says it was not recorded', async ($, on) => {
+  test('when recording the native summary as a Revision fails, the native result is still returned and the receipt says it was not recorded', HOST_FIXTURE, async ($, on) => {
     const u = usage(on);
     const w = world(on, {
       core: (c) =>
@@ -406,13 +435,13 @@ describe('budget', () => {
     expect(shown).toContain('was NOT recorded as a Revision');
     expect(shown).toContain('disk full');
     expect(u.statuses).toEqual([`Context Engine: ${FALLBACK}`, undefined]);
-    const again = await $.session.compact({ trigger: 'plugin', messages: [] });
+    const again = await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT });
     expect('skip' in again && again.skip).toContain('inactive');
     expect(w.commands()).toEqual(['open', 'record', 'native-compaction', 'close']);
     expect(w.native).toEqual(['auto']);
   });
 
-  test('a skipped native compaction is passed on and the adapter stands aside to prevent replay', async ($, on) => {
+  test('a skipped native compaction is passed on and the adapter stands aside to prevent replay', HOST_FIXTURE, async ($, on) => {
     usage(on);
     const w = world(on, { core: (c) => (c === 'record' ? ok({ budget: report({ overBudget: true, tier: 0 }) }) : ok()), nativeResult: { skip: 'blocked by a PreCompact hook' } });
     mock.env(on, {});
@@ -420,7 +449,7 @@ describe('budget', () => {
     const r = await $.session.compact({ trigger: 'auto', messages: [{ role: 'user' as const, text: 'TURN TEXT', toolUses: [] }] });
     expect(r).toEqual({ skip: 'blocked by a PreCompact hook' });
     expect(w.commands()).toEqual(['open', 'record', 'close']);
-    const again = await $.session.compact({ trigger: 'plugin', messages: [] });
+    const again = await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT });
     expect('skip' in again && again.skip).toContain('inactive');
     expect(w.commands()).toEqual(['open', 'record', 'close']);
     expect(w.native).toEqual(['auto']);
@@ -428,46 +457,49 @@ describe('budget', () => {
 });
 
 describe('one writer per session', () => {
-  test('when another live process holds the session, the mod stands aside and says so', async ($, on) => {
+  test('when another live process holds the session, the mod stands aside and says so', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: (c) => (c === 'open' ? { exitCode: 2, stdout: '{"ok":false,"error":"refused","holder":{"pid":42}}\n' } : ok()) });
     await start($);
     const { sections } = await $.prompt.compose(compose);
     expect(sections.length).toBe(1);
-    expect(await $.session.compact({ trigger: 'plugin', messages: [] })).toEqual({ skip: expect.stringContaining('Context Engine') });
-    expect(await $.session.compact({ trigger: 'manual', messages: [] })).toEqual(NATIVE);
+    expect(await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT })).toEqual({ skip: expect.stringContaining('Context Engine') });
+    expect(await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT })).toEqual(NATIVE);
     expect(w.logs.join('\n')).toContain('refused');
     expect(w.commands()).toEqual(['open']);
   });
 
   const refusedAtRecord = (c: string): Reply => (c === 'record' ? { exitCode: 2, stdout: '{"ok":false,"error":"refused","holder":{"pid":42}}\n' } : ok());
 
-  test('when the lock is refused at record time, the per-turn plugin compaction is skipped: no summarizer, no Working Context', async ($, on) => {
+  test('when the lock is refused at record time, the per-turn plugin compaction is skipped: no summarizer, no Working Context', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: refusedAtRecord });
     await start($);
-    expect(await $.session.compact({ trigger: 'plugin', messages: [] })).toEqual({ skip: expect.stringContaining('held by another process') });
+    expect(await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT })).toEqual({ skip: expect.stringContaining('held by another process') });
     expect(w.native).toEqual([]);
     expect(w.commands()).toEqual(['open', 'record']);
     expect(w.logs.join('\n')).toContain('refused');
   });
 
-  test('when the lock is refused at record time, an auto compaction still runs natively, so the context cannot overflow', async ($, on) => {
+  test('when the lock is refused at record time, an auto compaction still runs natively, so the context cannot overflow', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: refusedAtRecord });
     await start($);
-    expect(await $.session.compact({ trigger: 'auto', messages: [] })).toEqual(NATIVE);
+    expect(await $.session.compact({ trigger: 'auto', messages: NATIVE_INPUT })).toEqual(NATIVE);
     expect(w.native).toEqual(['auto']);
-    expect(w.commands()).toEqual(['open', 'record']);
+    expect(w.commands()).toEqual(['open', 'record', 'close']);
+    expect(await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT })).toEqual({ skip: expect.stringContaining('inactive') });
+    expect(w.commands()).toEqual(['open', 'record', 'close']);
+    expect(w.native).toEqual(['auto']);
   });
 });
 
 describe('participation (opt-in pilot, kill switch)', () => {
-  test('in a project that is not enabled, or with CONTEXT_ENGINE=off, the mod stands aside without a word on screen', async ($, on) => {
+  test('in a project that is not enabled, or with CONTEXT_ENGINE=off, the mod stands aside without a word on screen', HOST_FIXTURE, async ($, on) => {
     const inactive = { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"not enabled for this project"}\n' };
     const w = world(on, { core: () => inactive });
     await start($);
     const { sections } = await $.prompt.compose(compose);
     expect(sections.map((s) => s.id)).toEqual(['intro']);
-    expect(await $.session.compact({ trigger: 'plugin', messages: [] })).toEqual({ skip: expect.stringContaining('inactive') });
-    expect(await $.session.compact({ trigger: 'auto', messages: [] })).toEqual(NATIVE);
+    expect(await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT })).toEqual({ skip: expect.stringContaining('inactive') });
+    expect(await $.session.compact({ trigger: 'auto', messages: NATIVE_INPUT })).toEqual(NATIVE);
     expect(w.native).toEqual(['auto']);
     expect(w.commands()).toEqual(['open']);
     expect(w.shown).toEqual([]);
@@ -476,12 +508,12 @@ describe('participation (opt-in pilot, kill switch)', () => {
 });
 
 describe('participation changes mid-session', () => {
-  test('after `context-engine disable` or the kill switch, the next compaction stands aside: the trigger\'s is skipped, others run natively', async ($, on) => {
+  test('after `context-engine disable` or the kill switch, the next compaction stands aside: the trigger\'s is skipped, others run natively', HOST_FIXTURE, async ($, on) => {
     const inactive = { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled for /proj"}\n' };
     const w = world(on, { core: (c) => (c === 'open' || c === 'close' ? ok() : inactive) });
     await start($);
-    expect(await $.session.compact({ trigger: 'plugin', messages: [] })).toEqual({ skip: expect.stringContaining('inactive') });
-    expect(await $.session.compact({ trigger: 'manual', messages: [] })).toEqual(NATIVE);
+    expect(await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT })).toEqual({ skip: expect.stringContaining('inactive') });
+    expect(await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT })).toEqual(NATIVE);
     expect(w.native).toEqual(['manual']);
     await $.session.end({ reason: 'other', sessionId: SID, resume: undefined as never });
     expect(w.commands()).toEqual(['open', 'record', 'close']);
@@ -490,7 +522,7 @@ describe('participation changes mid-session', () => {
 });
 
 describe('session end', () => {
-  test('closes the core session', async ($, on) => {
+  test('closes the core session', HOST_FIXTURE, async ($, on) => {
     const w = world(on);
     await start($);
     await $.session.end({ reason: 'other', sessionId: SID, resume: undefined as never });
@@ -564,7 +596,7 @@ function compactionTextFor(body: string): string {
 }
 
 describe('per-step mode (experimental, opt-in)', () => {
-  test('off by default: every step is Claude Code\'s own, and no request is built', async ($, on) => {
+  test('off by default: every step is Claude Code\'s own, and no request is built', HOST_FIXTURE, async ($, on) => {
     world(on);
     const p = perStepWorld(on);
     mock.env(on, {});
@@ -575,7 +607,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.fetches).toEqual([]);
   });
 
-  test('on by CONTEXT_ENGINE_CLAUDE_MODE=per-step: the step is built from the synced Working Context and the paired tail, sent with the session auth handle', async ($, on) => {
+  test('on by CONTEXT_ENGINE_CLAUDE_MODE=per-step: the step is built from the synced Working Context and the paired tail, sent with the session auth handle', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on);
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -590,6 +622,11 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(f.init!.auth).toBe('opaque-handle-1');
     expect(Object.keys(f.init!.headers!).map((k) => k.toLowerCase())).not.toContain('authorization');
     const body = p.body();
+    // The real adapter calls $.prompt.compose() without an argument while building this step.
+    expect(w.composeInputs).toEqual([{ promptModel: 'fixture-model', outputStyle: null, surfaces: [], tools: [], traits: [] }]);
+    expect(JSON.stringify(body.system)).toContain('You are Claude Code.');
+    expect(JSON.stringify(body.system)).toContain('# Working Context (Context Engine)');
+    expect(JSON.stringify(body.system)).toContain(PER_STEP);
     expect(body.stream).toBe(false);
     expect(body.messages[0].role).toBe('user');
     expect(body.messages[0].content[0].text).toStartWith(`<working_context file="${WC}" delivery="${PER_STEP}" frame="${KEY}">`);
@@ -607,7 +644,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(result.usage).toEqual({ ...API_REPLY.usage, model: API_REPLY.model });
   });
 
-  test('each mod-built request is logged under the core state directory with its usage, and no headers', async ($, on) => {
+  test('each mod-built request is logged under the core state directory with its usage, and no headers', HOST_FIXTURE, async ($, on) => {
     world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on);
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -628,7 +665,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(w.text).not.toContain('anthropic-version');
   });
 
-  test('the status and the system section carry the experimental label and its gaps', async ($, on) => {
+  test('the status and the system section carry the experimental label and its gaps', HOST_FIXTURE, async ($, on) => {
     world(on, { core: coreWithState });
     const p = perStepWorld(on);
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -639,7 +676,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.statuses).toContain(STATUS);
   });
 
-  test('the first step of a new session (revision 0, no file yet) is built with an empty Working Context', async ($, on) => {
+  test('the first step of a new session (revision 0, no file yet) is built with an empty Working Context', HOST_FIXTURE, async ($, on) => {
     world(on, { core: (c) => (c === 'status' ? ok({ stateDir: STATE, lock: null }) : ok({ revision: 0 })), file: null, messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] });
     const p = perStepWorld(on);
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -649,7 +686,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.body().messages[0].content[0].text).toContain('(the Working Context file is empty)');
   });
 
-  test('on by the plugin option mode=per-step', { options: { mode: 'per-step' } }, async ($, on) => {
+  test('on by the plugin option mode=per-step', { ...HOST_FIXTURE, options: { mode: 'per-step' } }, async ($, on) => {
     world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on);
     mock.env(on, {});
@@ -658,7 +695,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.fetches.length).toBe(1);
   });
 
-  test('a failed request is logged and the step is left to Claude Code', async ($, on) => {
+  test('a failed request is logged and the step is left to Claude Code', HOST_FIXTURE, async ($, on) => {
     const w = world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on, { status: 529, reply: { type: 'error', error: { type: 'overloaded_error' } } });
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -670,7 +707,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.writes.length).toBe(1);
   });
 
-  test('without an auth handle the step is left to Claude Code', async ($, on) => {
+  test('without an auth handle the step is left to Claude Code', HOST_FIXTURE, async ($, on) => {
     world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on, { auth: false });
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -680,7 +717,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(p.engineSteps).toEqual([1]);
   });
 
-  test('with the kill switch on (or the project not enabled), per-step mode is off too: every step is Claude Code\'s own', async ($, on) => {
+  test('with the kill switch on (or the project not enabled), per-step mode is off too: every step is Claude Code\'s own', HOST_FIXTURE, async ($, on) => {
     const inactive = { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"turned off by the kill switch CONTEXT_ENGINE=off"}\n' };
     const w = world(on, { core: () => inactive, messages: TURN });
     const p = perStepWorld(on);
@@ -694,7 +731,7 @@ describe('per-step mode (experimental, opt-in)', () => {
     expect(w.commands()).toEqual(['open']);
   });
 
-  test('subagent steps are Claude Code\'s own', async ($, on) => {
+  test('subagent steps are Claude Code\'s own', HOST_FIXTURE, async ($, on) => {
     world(on, { core: coreWithState, messages: TURN });
     const p = perStepWorld(on);
     mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -732,7 +769,7 @@ describe('frames without a frame key', () => {
   ];
   const coreAt = (revision: number) => (c: string) => (c === 'status' ? ok({ stateDir: STATE, revision, lock: null }) : ok({ revision }));
   const files = { [`${STATE}/revisions/1.md`]: REV1, [`${STATE}/revisions/2.md`]: REV2 };
-  const REFUSAL = /frame without a frame key[\s\S]*records nothing[\s\S]*stands aside/;
+  const REFUSAL = /frame without a recognized frame key[\s\S]*records nothing[\s\S]*stands aside/;
 
   for (const [name, messages] of [
     ['a real unkeyed frame holding a committed revision', conversation(unkeyed(REV1))],
@@ -740,21 +777,22 @@ describe('frames without a frame key', () => {
     ['a pasted copy of a legacy frame after a new requirement', pastedCopy],
   ] as const) {
     for (const trigger of ['plugin', 'auto'] as const) {
-      test(`${name}: nothing is recorded, the user is told, Claude Code compacts natively, and the mod stands aside (${trigger})`, async ($, on) => {
+      test(`${name}: nothing is recorded, the user is told, Claude Code compacts natively, and the mod stands aside (${trigger})`, HOST_FIXTURE, async ($, on) => {
         const w = world(on, { core: coreAt(2), files, messages: messages as unknown[] });
         await start($);
-        const r = await $.session.compact({ trigger, messages: [] });
+        const r = await $.session.compact({ trigger, messages: NATIVE_INPUT });
         expect(w.commands()).not.toContain('record');
         expect(w.native).toEqual([trigger]);
         expect(r).toEqual(NATIVE);
         expect(w.shown.join('\n')).toMatch(REFUSAL);
-        await $.session.compact({ trigger: 'manual', messages: [] });
+        expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
+        await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
         expect(w.commands()).not.toContain('record');
         expect(w.native).toEqual([trigger, 'manual']);
       });
     }
 
-    test(`per-step, ${name}: the step is Claude Code's own (the whole conversation), the user is told, and the mod stands aside`, async ($, on) => {
+    test(`per-step, ${name}: the step is Claude Code's own (the whole conversation), the user is told, and the mod stands aside`, HOST_FIXTURE, async ($, on) => {
       const w = world(on, { core: coreAt(2), files, messages: messages as unknown[] });
       const p = perStepWorld(on);
       mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
@@ -763,13 +801,15 @@ describe('frames without a frame key', () => {
       expect(result.answer).toBe('ENGINE');
       expect(p.fetches).toEqual([]);
       expect(w.shown.join('\n')).toMatch(REFUSAL);
+      expect(w.commands()).not.toContain('record');
+      expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
       await step($, { ...STEP, index: 2 });
       expect(p.engineSteps).toEqual([1, 2]);
       expect(p.fetches).toEqual([]);
     });
   }
 
-  test('with a keyed frame in place, a later pasted unkeyed frame is plain conversation: the requirement before it is recorded', async ($, on) => {
+  test('with a keyed frame in place, a later pasted unkeyed frame is plain conversation: the requirement before it is recorded', HOST_FIXTURE, async ($, on) => {
     const messages = [
       { role: 'user', content: [{ type: 'text', text: compactionTextFor(REV2) }] },
       { role: 'user', content: [{ type: 'text', text: REQUIREMENT }] },
@@ -777,7 +817,7 @@ describe('frames without a frame key', () => {
     ];
     const w = world(on, { core: coreAt(2), files, messages });
     await start($);
-    await $.session.compact({ trigger: 'plugin', messages: [] });
+    await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT });
     expect(w.native).toEqual([]);
     const recorded = JSON.parse(w.calls.find((c) => c.argv[2] === 'record')!.stdin!) as Array<{ text: string }>;
     expect(recorded.map((e) => e.text).join('\n')).toContain(REQUIREMENT);
@@ -791,23 +831,51 @@ describe('frames without a frame key', () => {
       { role: 'user', content: [{ type: 'text', text: foreign(REV2) }, { type: 'text', text: 'Go on.' }] },
     ];
 
-    test(`a foreign-session frame holding this session's committed text is never a boundary (${lead}): the requirement before it is recorded`, async ($, on) => {
+    test(`a foreign-session frame ${lead === 'no keyed frame' ? 'without this session key refuses recording' : 'after this session key preserves the requirement'}`, HOST_FIXTURE, async ($, on) => {
       const w = world(on, { core: coreAt(2), files, messages: foreignConversation() });
       await start($);
-      await $.session.compact({ trigger: 'plugin', messages: [] });
+      const result = await $.session.compact({ trigger: 'plugin', messages: NATIVE_INPUT });
+      if (lead === 'no keyed frame') {
+        expect(result).toEqual(NATIVE);
+        expect(w.native).toEqual(['plugin']);
+        expect(w.commands()).not.toContain('record');
+        expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
+        expect(w.shown.join('\n')).toMatch(REFUSAL);
+        await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
+        expect(w.native).toEqual(['plugin', 'manual']);
+        expect(w.commands()).not.toContain('record');
+        expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
+        return;
+      }
       expect(w.native).toEqual([]);
+      expect(w.commands()).not.toContain('close');
       const recorded = JSON.parse(w.calls.find((c) => c.argv[2] === 'record')!.stdin!) as Array<{ text: string }>;
       const text = recorded.map((e) => e.text).join('\n');
       expect(text).toContain(REQUIREMENT);
       expect(text).toContain('Go on.');
     });
 
-    test(`per-step: a foreign-session frame holding this session's committed text is never a boundary (${lead}): the requirement is in the request`, async ($, on) => {
-      world(on, { core: coreAt(2), files, messages: foreignConversation() });
+    test(`per-step: a foreign-session frame ${lead === 'no keyed frame' ? 'without this session key leaves the step to Claude Code' : 'after this session key preserves the requirement'}`, HOST_FIXTURE, async ($, on) => {
+      const w = world(on, { core: coreAt(2), files, messages: foreignConversation() });
       const p = perStepWorld(on);
       mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step' });
       await start($);
-      await step($);
+      const { result } = await step($);
+      if (lead === 'no keyed frame') {
+        expect(result.answer).toBe('ENGINE');
+        expect(p.fetches).toEqual([]);
+        expect(p.engineSteps).toEqual([1]);
+        expect(w.commands()).not.toContain('record');
+        expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
+        expect(w.shown.join('\n')).toMatch(REFUSAL);
+        await step($, { ...STEP, index: 2 });
+        expect(p.fetches).toEqual([]);
+        expect(p.engineSteps).toEqual([1, 2]);
+        expect(w.commands().filter((c) => c === 'close')).toEqual(['close']);
+        return;
+      }
+      expect(p.engineSteps).toEqual([]);
+      expect(w.commands()).not.toContain('close');
       expect(p.fetches.length).toBe(1);
       expect(p.fetches[0]!.init!.body!).toContain(REQUIREMENT);
       expect(p.fetches[0]!.init!.body!).toContain('Go on.');
@@ -819,7 +887,7 @@ for (const scenario of [
   { budget: '40000', chars: 80001, expectedBudget: '15000' },
   { budget: '1', chars: 1, expectedBudget: undefined },
   { budget: undefined, chars: 600001, expectedBudget: undefined },
-]) test(`per-step file overflow uses the host step without a custom request (${scenario.budget ?? 'hard limit'})`, async ($, on) => {
+]) test(`per-step file overflow uses the host step without a custom request (${scenario.budget ?? 'hard limit'})`, HOST_FIXTURE, async ($, on) => {
   const w = world(on, { file: 'x'.repeat(scenario.chars) });
   const p = perStepWorld(on);
   mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step', ...(scenario.budget ? { CONTEXT_ENGINE_BUDGET_TOKENS: scenario.budget } : {}) });
@@ -834,7 +902,7 @@ for (const scenario of [
 });
 
 
-for (const fallback of ['no-auth', 'failed-response']) test(`per-step budget does not subtract an unsent Working Context after ${fallback}`, async ($, on) => {
+for (const fallback of ['no-auth', 'failed-response']) test(`per-step budget does not subtract an unsent Working Context after ${fallback}`, HOST_FIXTURE, async ($, on) => {
   const w = world(on, { file: 'x'.repeat(40000) });
   const p = perStepWorld(on, fallback === 'no-auth' ? { auth: false } : { status: 500 });
   mock.env(on, { CONTEXT_ENGINE_CLAUDE_MODE: 'per-step', CONTEXT_ENGINE_BUDGET_TOKENS: '60000' });
