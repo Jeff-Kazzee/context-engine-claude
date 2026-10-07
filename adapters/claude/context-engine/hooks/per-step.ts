@@ -323,7 +323,7 @@ export function stepFailure(status: number, response: ApiResponse): string | nul
       if (block.type === 'text' && typeof block.text !== 'string') return 'HTTP 200: malformed text block; native fallback';
       if (block.type === 'tool_use' && (typeof block.id !== 'string' || typeof block.name !== 'string' || !block.input || typeof block.input !== 'object' || Array.isArray(block.input))) return 'HTTP 200: malformed tool block; native fallback';
     }
-    if ((response.model !== undefined && typeof response.model !== 'string') || (response.usage !== undefined && (!response.usage || typeof response.usage !== 'object' || Array.isArray(response.usage)))) return 'HTTP 200: malformed response metadata; native fallback';
+    if ((response.stop_reason !== undefined && response.stop_reason !== null && typeof response.stop_reason !== 'string') || (response.model !== undefined && typeof response.model !== 'string') || (response.usage !== undefined && (!response.usage || typeof response.usage !== 'object' || Array.isArray(response.usage)))) return 'HTTP 200: malformed response metadata; native fallback';
     return null;
   }
   return `HTTP ${status}: ${JSON.stringify(response.error ?? response).slice(0, 300)}`;

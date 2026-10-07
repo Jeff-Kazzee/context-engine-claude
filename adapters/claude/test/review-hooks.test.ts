@@ -341,6 +341,6 @@ test('renewed6: over-budget native summary is returned without replacement frami
  const r=await w.compact('manual');assert.equal(r.messages[0].text,'native summary');assert.equal(w.calls.filter(c=>c==='close').length,1);
 });
 
-for(const response of ['null','{"content":[null]}','{"content":[{"type":"text","text":3}]}'])test('wave16: malformed success delegates the next step once: '+response,async()=>{
+for(const response of ['null','{"content":[null]}','{"content":[{"type":"text","text":3}]}','{"content":[],"stop_reason":{"toString":null}}'])test('wave16: malformed success delegates the next step once: '+response,async()=>{
   const w=fixture([],{mode:'per-step',response});await w.step();assert.equal(w.nativeCalls(),1);assert.match(w.logs.join('\n'),/failed.*native|failed.*sends this step/);await w.step();assert.equal(w.nativeCalls(),2);
 });

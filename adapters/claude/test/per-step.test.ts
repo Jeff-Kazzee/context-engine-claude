@@ -20,7 +20,7 @@ import {
 
 const WC = '/proj/.context-engine/S1/context.md';
 test('wave16: malformed successful per-step bodies refuse for native fallback',()=>{
-  for(const text of ['null','[]','{"content":[null]}','{"content":[3]}','{"content":[{"type":"text","text":3}]}','{"content":[{"type":"tool_use","name":"Read"}]}']){
+  for(const text of ['null','[]','{"content":[null]}','{"content":[3]}','{"content":[{"type":"text","text":3}]}','{"content":[{"type":"tool_use","name":"Read"}]}','{"content":[],"stop_reason":{"toString":null}}']){
     const response=parseStepResponse(text);assert.doesNotThrow(()=>stepFailure(200,response));assert.notEqual(stepFailure(200,response),null,text);
   }
   const response=parseStepResponse('{"content":[{"type":"text","text":"SAFE"}]}');assert.equal(stepFailure(200,response),null);assert.equal(stepChunks(response,{turnId:'T',index:1,model:'synthetic'}).result.answer,'SAFE');
