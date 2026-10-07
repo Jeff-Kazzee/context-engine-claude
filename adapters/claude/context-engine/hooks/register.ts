@@ -141,7 +141,12 @@ async function openCore($: EngineInterface): Promise<Opened | null> {
   try {
     const reply = await core($, at, 'open');
     // Without the session's frame key the mod could not tell its own frames from look-alikes.
-    if (!reply.frameKey) throw new CoreError('the core gave no frame key (core older than this mod?)');
+    if (!reply.frameKey) {
+      // Open succeeded: retain the handle before validation can fail.
+      opened = { ...at, workingContext: reply.workingContext, frameKey: '' };
+      await abandonCore($);
+      throw new CoreError('the core gave no frame key (core older than this mod?)');
+    }
     opened = { ...at, workingContext: reply.workingContext, frameKey: reply.frameKey };
     if (reply.receipt) log($, reply.receipt.text);
     log($, `session open at revision ${reply.revision}; Working Context ${reply.workingContext}`, 'debug');
@@ -515,12 +520,14 @@ export const register: Register = (on, options) => {
         // natively, so the context cannot overflow.
         log($, `${message(err)}; ${e.trigger === 'plugin' ? 'per-turn compaction skipped' : 'compaction left to Claude Code'}`);
         if (e.trigger === 'plugin') return { skip: 'Context Engine: the session is held by another process' };
+        await abandonCore($);
         releaseLease(); return next(e);
       }
       if (e.trigger === 'plugin') {
         log($, `per-turn compaction skipped: ${message(err)}`);
         return { skip: 'Context Engine: core unavailable; compaction skipped' };
       }
+      await abandonCore($);
       log($, `compaction left to Claude Code: ${message(err)}`);
       releaseLease(); return next(e);
     } finally { releaseLease(); }

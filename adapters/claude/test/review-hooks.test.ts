@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string; sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string; missingFrameKey?: boolean; refusedRecord?: boolean; sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
@@ -35,9 +35,10 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
       if (command === 'close' && opts.failClose) throw new Error('injected close failure');
       if ((command === 'record' || command === 'sync') && opts.inactive) return { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled"}', stderr: '' };
       const snapshot = opts.file ?? 'current context'; if (['sync', 'record', 'native-compaction'].includes(command)) opts.onSnapshot?.();
+      if(command==='record' && opts.refusedRecord)return {exitCode:2,stdout:'{"ok":false,"error":"refused"}',stderr:''};
       return command === 'record' && !opts.recordSuccess
         ? { exitCode: 1, stdout: '{"ok":false,"error":"injected record failure"}', stderr: '' }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, budget: command === 'native-compaction' && opts.nativeOverBudget ? {overBudget:true,approxTokens:4,budgetTokens:1,text:'SYNTHETIC_OVER_BUDGET'} : undefined, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: '00112233445566778899aabbccddeeff' }), stderr: '' };
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, budget: command === 'native-compaction' && opts.nativeOverBudget ? {overBudget:true,approxTokens:4,budgetTokens:1,text:'SYNTHETIC_OVER_BUDGET'} : undefined, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: opts.missingFrameKey ? undefined : '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
@@ -343,4 +344,24 @@ test('renewed6: over-budget native summary is returned without replacement frami
 
 for(const response of ['null','{"content":[null]}','{"content":[{"type":"text","text":3}]}','{"content":[],"stop_reason":{"toString":null}}'])test('wave16: malformed success delegates the next step once: '+response,async()=>{
   const w=fixture([],{mode:'per-step',response});await w.step();assert.equal(w.nativeCalls(),1);assert.match(w.logs.join('\n'),/failed.*native|failed.*sends this step/);await w.step();assert.equal(w.nativeCalls(),2);
+});
+
+for(const failClose of [false,true])test('wave29: successful open with missing frame key retains cleanup, failed close '+failClose,async()=>{
+ const opts:Parameters<typeof fixture>[1]={missingFrameKey:true,failClose};const w=fixture([],opts);
+ await w.compact('manual');assert.equal(w.calls.filter(c=>c==='close').length,1);
+ opts.failClose=false;await w.end();assert.equal(w.calls.filter(c=>c==='close').length,failClose?2:1);
+});
+test('wave29: unmanaged native fallback stands aside before a later boundary',async()=>{
+ const messages:adapter.ApiMessage[]=[];const w=fixture(messages);
+ assert.equal((await w.compact('manual')).messages[0].text,'native summary');
+ messages.push({role:'user',content:[{type:'text',text:'native summary'}]});
+ assert.match((await w.compact('plugin')).skip,/inactive/);assert.equal(w.calls.filter(c=>c==='close').length,1);
+ assert.equal(w.calls.filter(c=>c==='record').length,1);
+});
+
+test('wave29: refused empty-tail record native fallback stands aside before the next boundary',async()=>{
+ const messages:adapter.ApiMessage[]=[];const w=fixture(messages,{refusedRecord:true});
+ assert.equal((await w.compact('manual')).messages[0].text,'native summary');
+ messages.push({role:'user',content:[{type:'text',text:'native summary'}]});
+ assert.match((await w.compact('plugin')).skip,/inactive/);assert.equal(w.calls.filter(c=>c==='record').length,1);assert.equal(w.calls.filter(c=>c==='close').length,1);
 });
