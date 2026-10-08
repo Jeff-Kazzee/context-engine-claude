@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  maintained:
+    name: ${{ matrix.coverage }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            coverage: Linux maintained suite
+          - os: windows-2022
+            coverage: Windows pure operations and refusal
+          - os: macos-15
+            coverage: macOS pure operations and refusal
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      CONTEXT_ENGINE_REAL_CODEX_TESTS: '0'
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Node 24.21.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Set up pnpm 11.4.0
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: '11.4.0'
+          run_install: false
+      - name: Verify the checked-out commit
+        run: node -e "const actual=require('node:child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(); require('node:assert/strict').equal(actual,process.env.EXPECTED_HEAD); console.log(actual)"
+      - name: Install the committed dependency versions without lifecycle scripts
+        run: |
+          pnpm import
+          pnpm install --frozen-lockfile --ignore-scripts
+          git diff --exit-code -- package.json package-lock.json
+      - name: Typecheck maintained modules
+        run: pnpm run typecheck
+      - name: Run the maintained Linux core, setup and adapter tests
+        if: runner.os == 'Linux'
+        run: pnpm test
+      - name: Verify pure operations and no-write refusal on the actual host
+        if: runner.os != 'Linux'
+        run: node --test --test-concurrency=1 core/platform.test.ts
+      - name: Prepare the pinned Claude offline test runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          runtime="$RUNNER_TEMP/ce-claude-runtime"
+          mkdir -p "$runtime"
+          printf '{"private":true}\n' > "$runtime/package.json"
+          pnpm --dir "$runtime" add --lockfile-only --ignore-scripts --save-exact @anthropic-ai/claude-code-linux-x64@2.1.289
+          pnpm --dir "$runtime" install --frozen-lockfile --ignore-scripts
+          binary="$runtime/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+          printf 'a186b99e4a9c88366cd49df2f7dad56c61fc306ef0140b19ee64b7c42a8d1348  %s\n' "$binary" | sha256sum --check
+      - name: Run native Claude plugin contracts without network access
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          binary="$RUNNER_TEMP/ce-claude-runtime/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+          profile="$RUNNER_TEMP/ce-claude-profile"
+          mkdir -p "$profile"
+          for plugin in context-engine context-engine-trigger; do
+            sudo -n unshare --net -- runuser --user "$(id -un)" -- env -i \
+              PATH="$PATH" HOME="$profile" CLAUDE_CONFIG_DIR="$profile" \
+              DISABLE_UPDATES=1 DISABLE_AUTOUPDATER=1 \
+              "$binary" plugin test "$GITHUB_WORKSPACE/adapters/claude/$plugin"
+          done

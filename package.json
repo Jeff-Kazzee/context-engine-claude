@@ -1,0 +1,28 @@
+{
+  "name": "context-engine-claude",
+  "version": "0.1.5",
+  "description": "Model-controlled, editable working context for coding agents (shared core + CLI).",
+  "license": "MIT",
+  "author": "Jeff Kazzee",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "context-engine": "core/cli.ts",
+    "context-engine-claude": "core/cli.ts"
+  },
+  "exports": {
+    ".": "./core/index.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"core/**/*.test.ts\" \"setup/*.test.ts\" \"adapters/claude/test/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p .",
+    "test:claude-plugins": "claude plugin test adapters/claude/context-engine && claude plugin test adapters/claude/context-engine-trigger"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "typescript": "^7.0.2"
+  }
+}
