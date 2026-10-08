@@ -55,12 +55,22 @@ function main(): number {
     const entry = JSON.parse(readFileSync(join(dir, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins.find((p: Json) => p.name === name);
     const src = join(dir, entry.source);
     const version = JSON.parse(readFileSync(join(src, '.claude-plugin', 'plugin.json'), 'utf8')).version as string;
-    cpSync(src, join(home, 'plugins', 'cache', mp, name, version), { recursive: true });
+    const cache = join(home, 'plugins', 'cache', mp, name, version);
+    cpSync(src, cache, { recursive: true });
     const s = settings();
     s.enabledPlugins = { ...(s.enabledPlugins ?? {}), [id]: true };
+    for (let at = 3; at < args.length; at += 2) {
+      if (args[at] !== '--config' || !args[at + 1]?.includes('=')) throw new Error('unsupported fake plugin option');
+      const item = args[at + 1]!;
+      const key = item.slice(0, item.indexOf('='));
+      const value = item.slice(item.indexOf('=') + 1);
+      s.pluginConfigs ??= {};
+      s.pluginConfigs[id] ??= {};
+      s.pluginConfigs[id].options = { ...(s.pluginConfigs[id].options ?? {}), [key]: value };
+    }
     saveSettings(s);
     const installed = read(installedPath, { version: 2, plugins: {} });
-    installed.plugins[id] = [{ scope: 'user', installPath: src, version }];
+    installed.plugins[id] = [{ scope: 'user', installPath: cache, version }];
     save(installedPath, installed);
     process.stdout.write(`✔ Successfully installed plugin: ${id}\n`);
     return 0;

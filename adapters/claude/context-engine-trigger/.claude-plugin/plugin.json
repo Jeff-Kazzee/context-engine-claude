@@ -5,5 +5,13 @@
   "author": {
     "name": "Jeff Kazzee"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "coreCli": {
+      "type": "string",
+      "title": "Shared core CLI",
+      "description": "Canonical absolute path to the retained checkout core/cli.ts, set by the Context Engine installer. Reinstall if the checkout moves. The checkout-relative default is for source-layout development only.",
+      "default": "checkout-relative"
+    }
+  }
 }

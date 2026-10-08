@@ -65,6 +65,8 @@ import {
   systemSectionText,
   checkLegacyFrame,
   hasOnlyUnkeyedFrames,
+  WITHIN_TURN_MAX_BYTES,
+  withinTurnReadNotice,
 } from './adapter.ts';
 import {
   type ApiResponse,
@@ -100,6 +102,9 @@ let queue: Promise<unknown> = Promise.resolve();
 /** Reads of the file whose echo is stubbed, and whether the agent changed the file this turn. */
 const stubIds = new Set<string>();
 let editedThisTurn = false;
+/** Potential edits are checked once the current batch's last root tool finishes. */
+let pendingWithinTurnEdit = false;
+let lastNotifiedRevision: number | null = null;
 /** The plugin's `mode` option, as `register` received it. */
 let modeOption: unknown;
 /** Whether this session runs the experimental per-step mode; decided once per session, on first use. */
@@ -115,7 +120,10 @@ let fellBack = false;
  */
 let delivered: number | undefined;
 let lastDeliveredRevision: number | undefined;
+let coreCliOption: unknown;
 let executingTools = 0;
+let toolsDrained: Promise<void> | null = null;
+let resolveToolsDrained: (() => void) | null = null;
 let boundaryGate: Promise<void> | null = null;
 let turnInputs: readonly number[] = [];
 
@@ -128,9 +136,9 @@ function log($: EngineInterface, text: string, to: 'transcript' | 'debug' = 'tra
   $.ui.log(text.startsWith('Context Engine') ? text : `Context Engine: ${text}`, { to });
 }
 
-function core($: EngineInterface, at: Opened, command: CoreCommand, stdin?: string, budgetTokens?: number): Promise<CoreReply> {
+function core($: EngineInterface, at: Opened, command: CoreCommand, stdin?: string, budgetTokens?: number, deliveryMaxBytes?: number): Promise<CoreReply> {
   const call = queue.then(async () =>
-    parseCoreReply(await $.process.run(coreArgv($.plugin.root, command, at, budgetTokens), { cwd: at.projectRoot, stdin, timeoutMs: 60_000 })),
+    parseCoreReply(await $.process.run(coreArgv($.plugin.root, command, at, budgetTokens, deliveryMaxBytes, coreCliOption), { cwd: at.projectRoot, stdin, timeoutMs: 60_000 })),
   );
   queue = call.catch(() => undefined);
   return call;
@@ -331,6 +339,7 @@ async function logRequest($: EngineInterface, at: Opened, e: TurnStepInput, r: {
 
 export const register: Register = (on, options) => {
   modeOption = options.mode;
+  coreCliOption = options.coreCli;
 
   on('session.start', async ($, e, next) => {
     await abandonCore($);
@@ -342,8 +351,13 @@ export const register: Register = (on, options) => {
     delivered = undefined;
     lastDeliveredRevision = undefined;
     executingTools = 0;
+    resolveToolsDrained?.();
+    toolsDrained = null;
+    resolveToolsDrained = null;
     turnInputs = [];
     editedThisTurn = false;
+    pendingWithinTurnEdit = false;
+    lastNotifiedRevision = null;
     stubIds.clear();
     await ensureOpen($);
     return next(e);
@@ -536,20 +550,64 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (!e.agentId) while (boundaryGate) await boundaryGate;
     const tracked = !!opened && !e.agentId;
-    if (tracked) executingTools++;
+    if (tracked) {
+      if (executingTools === 0) toolsDrained = new Promise(resolve => { resolveToolsDrained = resolve; });
+      executingTools++;
+    }
+    let result: Awaited<ReturnType<typeof next>>;
     try {
       // Shell input has no trustworthy file_path. Preserve later reads rather
       // than trying to infer filesystem effects from arbitrary shell syntax.
       if (opened && !e.agentId && String(e.tool) === 'Bash') {
         editedThisTurn = true;
+        pendingWithinTurnEdit = true;
         stubIds.clear();
       }
       if (opened && !e.agentId && isWorkingContextPath((e as { file_path?: unknown }).file_path, opened.workingContext)) {
-        if (String(e.tool) !== 'Read') editedThisTurn = true;
+        if (String(e.tool) !== 'Read') { editedThisTurn = true; pendingWithinTurnEdit = true; }
         else if (!editedThisTurn && e.tool_use_id) stubIds.add(e.tool_use_id);
       }
-      return await next(e);
-    } finally { if (tracked) executingTools--; }
+      result = await next(e);
+    } finally {
+      if (tracked && --executingTools === 0) {
+        resolveToolsDrained?.();
+        toolsDrained = null;
+        resolveToolsDrained = null;
+      }
+    }
+    const at = opened;
+    if (!tracked || !at || !pendingWithinTurnEdit || result.deny
+        || await perStepMode($)) return result;
+    let releaseBoundary: (() => void) | undefined;
+    try {
+      // Await native execution, not the sibling hook results. Successful results
+      // remain available as carriers when the last sibling denies or throws.
+      while (toolsDrained) await toolsDrained;
+      releaseBoundary = await acquireBoundary(at);
+      if (!pendingWithinTurnEdit) return result;
+      const room = await budgetNow($);
+      if (room?.exhausted) return result;
+      const reply = await core($, at, 'sync', undefined, room?.budgetTokens, WITHIN_TURN_MAX_BYTES);
+      pendingWithinTurnEdit = false;
+      const data = withinTurnReadNotice(reply, lastNotifiedRevision, at.sessionId, coreArgv($.plugin.root, 'sync', at, undefined, undefined, coreCliOption)[1]!);
+      if (!data) {
+        if (reply.receipt) log($, reply.receipt.text);
+        if (reply.delivery?.kind === 'not-ready') log($, `Working Context read notice was not added (${reply.delivery.reason}). Read it with ordinary tools or use the next compaction boundary.`);
+        return result;
+      }
+      const prior = result.context ?? [];
+      // The host clips combined reminders above 200k characters. Never submit a notice that the host would clip.
+      if (prior.reduce((size, text) => size + text.length, 0) + data.text.length > 190_000) {
+        log($, 'Working Context read notice was not added because this tool already carries too much context.');
+        return result;
+      }
+      lastNotifiedRevision = data.revision;
+      log($, `Working Context revision ${data.revision}, sha256 ${data.sha256}, read notice submitted. Editable content has not been delivered.`, 'debug');
+      return { ...result, context: [...prior, data.text] };
+    } catch (err) {
+      log($, `Working Context read notice was not added: ${message(err)}`);
+      return result;
+    } finally { releaseBoundary?.(); }
   });
 
   on('session.append', { door: 'tool-result' }, async ($, e, next) => {
@@ -561,6 +619,8 @@ export const register: Register = (on, options) => {
   });
 
   on('session.end', async ($, e, next) => {
+    pendingWithinTurnEdit = false;
+    lastNotifiedRevision = null;
     await abandonCore($);
     opening = null;
     if (perStep || fellBack) $.ui.status(undefined);

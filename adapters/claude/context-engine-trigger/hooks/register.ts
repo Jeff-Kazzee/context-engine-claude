@@ -10,6 +10,7 @@
 import type { EngineInterface, Register } from 'claude-code';
 
 let interactive = false;
+let coreCliOption: unknown;
 let composeInput: Parameters<EngineInterface['prompt']['compose']>[0] | undefined;
 let generation = 0;
 
@@ -29,15 +30,23 @@ async function compactNow($: EngineInterface, scheduled: number, input: NonNulla
       if (part === '..') segments.pop();
       else if (part && part !== '.') segments.push(part);
     }
-    const checked = await $.process.run(['node', `/${segments.join('/')}`, 'status', '--project', projectRoot, '--json'], { cwd: projectRoot, timeoutMs: 60000 });
-    if (!current() || checked.exitCode !== 0 || JSON.parse(checked.stdout).claude?.active !== true) return;
+    const cli = coreCliOption === undefined || coreCliOption === 'checkout-relative' ? `/${segments.join('/')}` : coreCliOption;
+    if (typeof cli !== 'string' || !cli.startsWith('/') || /[\u0000-\u001F\u007F]/.test(cli)
+        || cli.includes('//') || cli.split('/').some(part => part === '.' || part === '..') || !cli.endsWith('/core/cli.ts')) {
+      throw new Error('coreCli must name the canonical absolute checkout/core/cli.ts file; reinstall Context Engine from its retained checkout.');
+    }
+    const checked = await $.process.run(['node', cli, 'status', '--project', projectRoot, '--json'], { cwd: projectRoot, timeoutMs: 60000 });
+    if (!current()) return;
+    if (checked.exitCode !== 0) throw new Error(`configured core CLI could not be loaded: ${cli}`);
+    if (JSON.parse(checked.stdout).claude?.active !== true) return;
     await $.session.compact({});
   } catch (err: unknown) {
     $.ui.log(`Context Engine trigger: compaction refused: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' });
   }
 }
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+  coreCliOption = options.coreCli;
   on('session.start', async ($, e, next) => {
     generation++;
     interactive = e.isInteractive;

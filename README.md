@@ -8,7 +8,13 @@
 
 An experimental, opt-in plugin that lets your agent edit its **Working Context** with ordinary tools. This repository ships only the Claude Code adapter and a pinned shared core. It starts **off in every project**. No default-on recommendation or accuracy gain is claimed.
 
-**Full Replacement per user turn; Injection within a turn.** A default-mode edit takes effect at the next user-turn boundary or compaction, not each model step.
+**Full Replacement per user turn. Explicit read-back within a turn.** An accepted Working Context edit produces a static revision and digest notice with a command for the retained core CLI. The notice contains no editable content. Use `--framed` and read every part with the same digest. A later continuation of the same user turn can receive the edit as ordinary tool output. This addition retains earlier history and does not guarantee a smaller request. Full Replacement per user turn remains at the existing user-turn or compaction boundary.
+
+The native host places tool-hook context in a system message. Context Engine therefore uses it only for validated metadata and fixed read instructions, never Working Context bytes. An edit does not automatically load the full file into the immediate next model call. The adapter preserves the original tool result and reference. It waits for the root tool batch to finish, then gives each accepted edit revision one notice. Initialization, ordinary events and unchanged revisions produce no edit notice.
+
+The validated packet must fit 32,000 UTF-8 bytes including its carrier and the Working Context budget. Refused or oversized packets are never truncated. A notice or completed file read is not proof of request delivery.
+
+**Later compaction is a separate boundary.** The existing guard stands aside before recording when the native tail contains Bash and the Working Context revision changed since the previous replacement. The CLI read uses Bash. A successful within-turn read does not count as replacement or clear this guard. Do not infer later automatic replacement from a successful read-back test.
 
 ## Give this prompt to your agent to set it up
 
@@ -92,9 +98,15 @@ The visible session frame key is not authentication. Multiple keyed frames, or a
 
 ## 3. Prove delivery, then enable your intended project
 
-Use harmless, unique strings such as `CE_OLD_TEST` and `CE_NEW_TEST`. Ask the agent to locate its own Working Context, retain the active request and decisions, replace the old sentinel with the new one, and proceed across the documented boundary. For Claude Code, that boundary is the next user turn or compaction in default mode.
+Use harmless, unique strings such as `CE_OLD_TEST` and `CE_NEW_TEST`. Preserve the current human request and the runner instructions, tools and permissions. Test the intended delivery mode explicitly.
 
-Inspect authorized, minimally scoped request-level evidence: old sentinel absent, new sentinel delivered, Working Context at user-message authority, and runner instructions/tools/permissions preserved. Do not capture a real private project or authentication. A changed `context.md`, an active status line, or the agent saying it remembered something is insufficient proof of replacement. If your runtime offers no safe request inspection, report the result as **unverified** and keep the test scope.
+For within-turn read-back, first establish a committed Working Context, then edit it while the same user turn continues. The immediate next native request must contain only the static revision-and-digest notice in hook context. It must not contain editable file bytes in a system or developer message. Run the notice's digest-bound CLI command with `--framed` and read every part with the same digest. Read exactly the payload byte count declared in each versioned frame, then check its fixed footer. Body text that resembles a footer is still payload. Inspect the following native request for the complete edited file in ordinary tool output. Earlier native history remains.
+
+An unchanged write and an ordinary tool call must not add another edit notice.
+
+For Full Replacement per user turn, cross the existing user-turn or compaction boundary. Verify that the replacement frame contains the new Working Context at user-message authority and removed history no longer occupies the rebuilt input. Headless hosts must send `/compact` between turns.
+
+Inspect only authorized, scoped request evidence from a disposable project. A changed file, active status, prepared packet, hook return or model statement does not establish delivery. If safe request inspection is unavailable, report delivery as **unverified** and keep the test scope.
 
 After you accept the result, move to the intended project and run `context-engine-claude enable`, then `context-engine-claude status`. Preserve the original task, user control and ordinary approval boundaries. Editable context is user data and can retain prompt injections; it does not gain system/developer authority.
 

@@ -359,7 +359,7 @@ test('round trip: claude install, enable, record, edit, sync, disable and uninst
 
 test('the runtime README states supported modes, setup proof, user control and unverified limits', () => {
   const readme=readFileSync(new URL('../README.md',import.meta.url),'utf8');assertQualified(readme);
-  for(const label of ["Full Replacement per user turn; Injection within a turn", "EXPERIMENTAL: Full Replacement per model step", "Compaction-only"])assert.ok(readme.includes(label),label);
+  for(const label of ["Full Replacement per user turn. Explicit read-back within a turn", "EXPERIMENTAL: Full Replacement per model step", "Compaction-only"])assert.ok(readme.includes(label),label);
   assert.match(readme,/Give this prompt to your agent to set it up/);assert.match(readme,/off in every project/);
   assert.match(readme,/fresh disposable test project FIRST/);assert.match(readme,/NEXT REQUEST/);assert.match(readme,/file write is not proof/);
   assert.match(readme,/exact head/);assert.match(readme,/approval/);assert.match(readme,/unverified/i);assert.match(readme,/Linux[\s\S]*Node \*\*24/);
@@ -367,4 +367,24 @@ test('the runtime README states supported modes, setup proof, user control and u
   assert.match(readme,/prior text remains in runner transcripts and the Event Log/);assert.match(readme,/16 MiB/);
   for(const link of ['SOURCE.json','PROVENANCE.md','GLOSSARY.md','adapters/claude/README.md'])assert.ok(existsSync(new URL('../'+link,import.meta.url)),link);
   const provenance=readFileSync(new URL('../PROVENANCE.md',import.meta.url),'utf8');assert.match(provenance,/CC BY-NC 4\.0/);assert.match(provenance,/No upstream CLM code or prompt quotations are shipped/);
+});
+
+test('Claude installed core configuration is pinned and pre-existing options are restored', () => {
+  const w = world();
+  const path = join(w.claudeHome, 'settings.json');
+  const original = JSON.stringify({ pluginConfigs: { 'context-engine@context-engine': { options: { mode: 'turn', coreCli: '/prior checkout/core/cli.ts' } } }, theme: 'dark' }) + '\n';
+  writeFileSync(path, original);
+  const installed = w.ce(['install']);
+  assert.equal(installed.status, 0, installed.stderr);
+  const settings = JSON.parse(readFileSync(path, 'utf8'));
+  const registrations = JSON.parse(readFileSync(join(w.claudeHome, 'plugins/installed_plugins.json'), 'utf8'));
+  for (const id of ['context-engine@context-engine', 'context-engine-trigger@context-engine']) {
+    const cli = settings.pluginConfigs[id].options.coreCli;
+    assert.ok(cli.startsWith('/') && cli.endsWith('/core/cli.ts'));
+    assert.ok(existsSync(cli));
+    assert.ok(registrations.plugins[id][0].installPath.startsWith(join(w.claudeHome, 'plugins/cache')));
+  }
+  const removed = w.ce(['uninstall']);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(readFileSync(path, 'utf8'), original);
 });

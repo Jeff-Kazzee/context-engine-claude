@@ -2,7 +2,7 @@
 // commands. The runner homes honour CLAUDE_CONFIG_DIR and CODEX_HOME, so tests and checks can use
 // scratch homes; the runner binaries can be swapped with CONTEXT_ENGINE_CLAUDE_BIN/_CODEX_BIN.
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,7 +72,7 @@ export function claudeSpec(ctx: SetupContext): RunnerSpec {
       [installed]: jsonRule(CLAUDE_PLUGIN_IDS.map((id) => ['plugins', id])),
       [known]: jsonRule([[MARKETPLACE]]),
     },
-    install: [['plugin', 'marketplace', 'add', join(ctx.checkout, 'adapters', 'claude')], ...CLAUDE_PLUGIN_IDS.map((id) => ['plugin', 'install', id])],
+    install: [['plugin', 'marketplace', 'add', join(ctx.checkout, 'adapters', 'claude')], ...CLAUDE_PLUGIN_IDS.map((id) => ['plugin', 'install', id, '--config', `coreCli=${realpathSync(join(ctx.checkout, 'core', 'cli.ts'))}`])],
     uninstall: [...[...CLAUDE_PLUGIN_IDS].reverse().map((id) => ['plugin', 'uninstall', id]), ['plugin', 'marketplace', 'remove', MARKETPLACE]],
   };
 }

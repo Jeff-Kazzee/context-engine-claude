@@ -38,10 +38,15 @@ function normalize(path: string): string {
  * passes --if-enabled: in a project nobody enabled, or with the kill switch CONTEXT_ENGINE=off, the
  * core does nothing and says so (CoreError.inactive).
  */
-export function coreArgv(pluginRoot: string, command: CoreCommand, at: { sessionId: string; projectRoot: string }, budgetTokens?: number): string[] {
+export function coreArgv(pluginRoot: string, command: CoreCommand, at: { sessionId: string; projectRoot: string }, budgetTokens?: number, deliveryMaxBytes?: number, coreCli?: unknown): string[] {
+  const cli = coreCli === undefined || coreCli === 'checkout-relative' ? normalize(`${pluginRoot}/../../../core/cli.ts`) : coreCli;
+  if (typeof cli !== 'string' || !cli.startsWith('/') || normalize(cli) !== cli
+      || /[\u0000-\u001F\u007F]/.test(cli) || !cli.endsWith('/core/cli.ts')) {
+    throw new CoreError('coreCli must name the canonical absolute checkout/core/cli.ts file; reinstall Context Engine from its retained checkout.');
+  }
   const argv = [
     'node',
-    normalize(`${pluginRoot}/../../../core/cli.ts`),
+    cli,
     command,
     '--session',
     at.sessionId,
@@ -53,7 +58,9 @@ export function coreArgv(pluginRoot: string, command: CoreCommand, at: { session
     String(HARD_LIMIT_CHARS),
     '--if-enabled',
   ];
-  return budgetTokens ? [...argv, '--budget', String(budgetTokens)] : argv;
+  if (budgetTokens) argv.push('--budget', String(budgetTokens));
+  if (deliveryMaxBytes !== undefined) argv.push('--delivery-max-bytes', String(deliveryMaxBytes));
+  return argv;
 }
 
 // ---- the Working Context's budget (issue #22) ----
@@ -144,7 +151,48 @@ export function workingContextBudget(input: { breakdown: ContextBreakdown | null
 export type Receipt = { kind: 'committed' | 'restored' | 'stale'; revision: number; chars: number; approxTokens: number; text: string };
 /** The core's budget report (core/budget.ts BudgetReport): its `text` is core-authored static text with numbers. */
 export type BudgetReport = { budgetTokens: number; approxTokens: number; percent: number; overBudget: boolean; tier: number; urgent: boolean; text: string };
-export type CoreReply = { ok: true; revision: number; chars: number; workingContext: string; workingContextText?: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string };
+export type CoreDelivery = {
+  kind: 'ready'; revision: number; sha256: string; chars: number; bytes: number; text: string;
+} | {
+  kind: 'not-ready'; revision: number; sha256: string; chars: number; bytes: number; reason: string;
+};
+export type CoreReply = { ok: true; revision: number; revisionKind?: string; chars: number; workingContext: string; workingContextText?: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string; delivery?: CoreDelivery };
+
+export const WITHIN_TURN_MAX_BYTES = 32_000;
+
+/** Accept only a newly committed model edit. A notice or a runner append is not edited context. */
+function withinTurnDelivery(reply: CoreReply, lastSubmittedRevision: number | null): CoreDelivery & { kind: 'ready' } | null {
+  if (reply.revisionKind !== 'model-edit' || reply.receipt?.kind !== 'committed'
+      || reply.receipt.revision !== reply.revision || reply.revision === lastSubmittedRevision) return null;
+  const data = reply.delivery;
+  if (!data || data.kind !== 'ready') return null;
+  const committed = reply.workingContextText;
+  const marker = `<working_context revision="${data.revision}" sha256="${data.sha256}">\n`;
+  if (!Number.isSafeInteger(data.revision) || data.revision < 1 || data.revision !== reply.revision
+      || data.chars !== reply.chars || !Number.isSafeInteger(data.bytes) || data.bytes < 1
+      || typeof data.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(data.sha256)
+      || typeof data.text !== 'string' || !data.text.isWellFormed()
+      || new TextEncoder().encode(data.text).length > WITHIN_TURN_MAX_BYTES
+      || typeof committed !== 'string' || committed.length !== data.chars
+      || new TextEncoder().encode(committed).length !== data.bytes
+      || !data.text.includes(marker) || !data.text.endsWith('\n</working_context>')
+      || data.text.slice(data.text.indexOf(marker) + marker.length, -'\n</working_context>'.length) !== committed) {
+    throw new CoreError('invalid bounded Working Context delivery packet');
+  }
+  return data;
+}
+
+/** A static read instruction. Hook reminders have system authority, so never include editable bytes. */
+export function withinTurnReadNotice(reply: CoreReply, lastNotifiedRevision: number | null, sessionId: string, coreCli: string): { revision: number; sha256: string; text: string } | null {
+  const data = withinTurnDelivery(reply, lastNotifiedRevision);
+  if (!data) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new CoreError('invalid Working Context session identity');
+  // Reuse the installed CLI path validation. POSIX single quoting keeps path characters inert.
+  const cli = coreArgv('/unused', 'sync', { sessionId, projectRoot: '/' }, undefined, undefined, coreCli)[1]!;
+  const quoted = "'" + cli.replaceAll("'", "'\\''") + "'";
+  return { revision: data.revision, sha256: data.sha256,
+    text: `Context Engine: Working Context revision ${data.revision} was validated (sha256 ${data.sha256}). This notice does not deliver its content. To use the edit within this turn, run node ${quoted} read --session ${sessionId} --sha ${data.sha256} --framed and read every framed part with the same digest. Each frame declares the exact payload byte length. Read-back adds ordinary tool data to a later continuation and does not remove earlier native history.` };
+}
 
 export class CoreError extends Error {
   /** True when another live process holds the session (one writer per session). */

@@ -5,6 +5,7 @@ import type { On } from 'claude-code';
 function world(on: On, active = true, configured = true) {
   const compactions: unknown[] = [];
   const logs: string[] = [];
+  const calls: string[][] = [];
   on('session.start', async (_$, e) => ({ cwd: e.cwd }));
   on('turn.complete', async (_$, e) => ({ text: e.answer }));
   on('session.compact', async (_$, e) => {
@@ -17,12 +18,12 @@ function world(on: On, active = true, configured = true) {
   on('prompt.compose', async () => ({ sections: active ? [{ id: 'context-engine:working-context', text: 'active', scope: 'session' as const }] : [] }));
   on('session.id', async () => ({ value: 'sid' }));
   on('session.root', async () => ({ value: '/proj' }));
-  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ claude: { active: configured } }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }));
+  on('process.run', async (_$, e) => { calls.push([...e.argv]); return { value: { exitCode: 0, stdout: JSON.stringify({ claude: { active: configured } }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }; });
   on('ui.log', async (_$, e) => {
     logs.push(e.text);
     return { value: undefined };
   });
-  return { compactions, logs, clock: mock.clock(on) };
+  return { compactions, logs, calls, clock: mock.clock(on) };
 }
 
 const turn = (extra: { agentId?: string } = {}) => ({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' as const, ...extra });
@@ -72,4 +73,23 @@ test('headless sessions do not compact from the trigger (the host sends /compact
   await $.turn.complete(turn());
   await w.clock.settle();
   expect(w.compactions).toEqual([]);
+});
+
+test('installed trigger uses the configured core path with spaces', { options: { coreCli: '/retained checkout/core/cli.ts' } }, async ($, on) => {
+  const w = world(on);
+  await start($, true);
+  await $.turn.complete(turn());
+  await w.clock.settle();
+  expect(w.calls[0]![1]).toBe('/retained checkout/core/cli.ts');
+  expect(w.compactions).toEqual([{}]);
+});
+
+test('invalid explicit trigger core path is reported and never falls back', { options: { coreCli: '../core/cli.ts' } }, async ($, on) => {
+  const w = world(on);
+  await start($, true);
+  await $.turn.complete(turn());
+  await w.clock.settle();
+  expect(w.calls).toEqual([]);
+  expect(w.compactions).toEqual([]);
+  expect(w.logs.join('\n')).toContain('coreCli must name the canonical absolute');
 });

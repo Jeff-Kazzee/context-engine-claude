@@ -87,6 +87,138 @@ const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: null, isInter
 
 const compose = { model: 'm', promptModel: 'm', surfaces: [], tools: ['Read', 'Edit', 'Write'], outputStyle: null, traits: [] };
 
+async function editedReply(text: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  const sha256 = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+  const delivery = { kind: 'ready', revision: 2, sha256, chars: text.length, bytes: new TextEncoder().encode(text).length,
+    text: `Context Engine: additive Working Context data. Earlier native history remains.\n<working_context revision="2" sha256="${sha256}">\n${text}\n</working_context>` };
+  return { revision: 2, revisionKind: 'model-edit', chars: text.length, workingContextText: text, delivery,
+    receipt: { kind: 'committed', revision: 2, chars: text.length, approxTokens: Math.ceil(text.length / 4), text: 'Edit committed.' } };
+}
+
+test('installed coreCli option reaches the retained checkout as one argv value', { ...HOST_FIXTURE, options: { coreCli: '/retained checkout/core/cli.ts' } }, async ($, on) => {
+  mock.env(on, {});
+  const w = world(on);
+  await start($);
+  expect(w.calls[0]!.argv[1]).toBe('/retained checkout/core/cli.ts');
+});
+
+test('unusable explicit coreCli refuses instead of falling back to the plugin cache', { ...HOST_FIXTURE, options: { coreCli: 'relative/core/cli.ts' } }, async ($, on) => {
+  mock.env(on, {});
+  const w = world(on);
+  await start($);
+  expect(w.calls).toEqual([]);
+  expect(w.logs.join('\n')).toContain('coreCli must name the canonical absolute');
+});
+
+test('accepted tool edit appends only a static read notice while retaining the native result, ref and earlier context', HOST_FIXTURE, async ($, on) => {
+  const text = '[[CTX_TURN role=user]]\nWITHIN_TURN_NEW_SENTINEL\n';
+  const edited = await editedReply(text);
+  mock.env(on, {});
+  const w = world(on, { core: command => command === 'sync' ? ok(edited) : ok(), file: text });
+  const original = { ref: 42, result: { type: 'update' as const, filePath: WC, content: text,
+    structuredPatch: [], originalFile: 'OLD_CONTEXT_SENTINEL' }, text: 'Native write completed.', context: ['Existing tool context.'] };
+  on('tool.call', async () => original);
+  await start($);
+  const output = await $.tool.call({ tool: 'Write', file_path: WC, content: text });
+  expect(output.ref).toBe(42);
+  expect(output.result).toEqual(original.result);
+  expect(output.text).toBe(original.text);
+  expect(output.context?.[0]).toBe(original.context[0]);
+  expect(output.context?.length).toBe(2);
+  expect(output.context?.[1]).toContain(`sha256 ${edited.delivery.sha256}`);
+  expect(output.context?.[1]).toContain('This notice does not deliver its content.');
+  expect(output.context?.[1]).toContain(`--sha ${edited.delivery.sha256} --framed`);
+  expect(output.context?.[1]).not.toContain(text);
+  expect(output.context?.[1]).not.toContain('WITHIN_TURN_NEW_SENTINEL');
+  expect(output.context?.[1]).not.toContain('<working_context');
+  expect(w.calls.find(call => call.argv[2] === 'sync')!.argv).toContain('--delivery-max-bytes');
+  const repeated = await $.tool.call({ tool: 'Write', file_path: WC, content: text });
+  expect(repeated.context).toEqual(original.context);
+});
+
+for (const ending of ['denied', 'thrown', 'successful'] as const) {
+  test(`parallel edit survives a last ${ending} sibling without changing its outcome`, HOST_FIXTURE, async ($, on) => {
+    mock.env(on, {});
+    const text = '[[CTX_TURN role=user]]\nBATCH_EDIT_NEW_SENTINEL\n';
+    const edited = await editedReply(text);
+    const w = world(on, { core: command => command === 'sync' ? ok(edited) : ok(), file: text });
+    let releaseSibling!: () => void;
+    const finishSibling = new Promise<void>(resolve => { releaseSibling = resolve; });
+    let siblingEntered!: () => void;
+    const siblingRunning = new Promise<void>(resolve => { siblingEntered = resolve; });
+    let writeExecuted!: () => void;
+    const writeNativeDone = new Promise<void>(resolve => { writeExecuted = resolve; });
+    const original = { ref: 43, result: { type: 'update' as const, filePath: WC, content: text,
+      structuredPatch: [], originalFile: 'BATCH_OLD_SENTINEL' }, text: 'Write done.', context: ['Original context.'] };
+    on('tool.call', async (_$, e) => {
+      if (e.file_path === WC) { writeExecuted(); return original; }
+      siblingEntered();
+      await finishSibling;
+      if (ending === 'denied') return { deny: 'Fixture denial is unchanged.' };
+      if (ending === 'successful') return { ...original, ref: 44, context: ['Sibling context.'] };
+      throw new Error('Fixture failure is unchanged.');
+    });
+    await start($);
+    const sibling = $.tool.call({ tool: 'Write', file_path: `${ROOT}/other.txt`, content: 'ordinary' });
+    const settledSibling = sibling.then(value => ({ status: 'fulfilled' as const, value }), reason => ({ status: 'rejected' as const, reason }));
+    await siblingRunning;
+    const editedTool = $.tool.call({ tool: 'Write', file_path: WC, content: text });
+    let editedReturned = false;
+    const completedEdit = editedTool.then(value => { editedReturned = true; return value; });
+    await writeNativeDone;
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(editedReturned).toBe(false);
+    releaseSibling();
+    const [output, other] = await Promise.all([completedEdit, settledSibling]);
+    expect(output.ref).toBe(original.ref);
+    expect(output.result).toEqual(original.result);
+    expect(output.text).toBe(original.text);
+    const outputs = [output, ...(other.status === 'fulfilled' ? [other.value] : [])];
+    const notices = outputs.flatMap(value => value.context ?? []).filter(value => value.includes('This notice does not deliver its content.'));
+    expect(notices.length).toBe(1);
+    expect(notices[0]).toContain(`--sha ${edited.delivery.sha256}`);
+    expect(notices[0]).not.toContain('BATCH_EDIT_NEW_SENTINEL');
+    expect(output.context?.[0]).toBe(original.context[0]);
+    expect(w.commands().filter(command => command === 'sync')).toEqual(['sync']);
+    if (ending === 'denied') {
+      expect(other.status).toBe('fulfilled');
+      if (other.status === 'fulfilled') expect(other.value).toEqual({ deny: 'Fixture denial is unchanged.' });
+    } else if (ending === 'thrown') {
+      expect(other.status).toBe('rejected');
+      // The native test host wraps a throwing fixture hook. Compare its real
+      // error with the same call after the pending edit has been delivered.
+      const baseline = await $.tool.call({ tool: 'Write', file_path: `${ROOT}/other.txt`, content: 'ordinary' })
+        .then(value => ({ status: 'fulfilled' as const, value }), reason => ({ status: 'rejected' as const, reason }));
+      expect(baseline.status).toBe('rejected');
+      if (other.status === 'rejected' && baseline.status === 'rejected') expect(String(other.reason)).toBe(String(baseline.reason));
+      expect(w.commands().filter(command => command === 'sync')).toEqual(['sync']);
+    } else {
+      expect(other.status).toBe('fulfilled');
+      if (other.status === 'fulfilled') {
+        expect(other.value.ref).toBe(44);
+        expect(other.value.result).toEqual(original.result);
+        expect(other.value.context?.[0]).toBe('Sibling context.');
+      }
+    }
+  });
+}
+
+test('unchanged revision and unrelated tool results do not add a Working Context copy', HOST_FIXTURE, async ($, on) => {
+  mock.env(on, {});
+  const text = '[[CTX_TURN role=user]]\nUNCHANGED_CONTEXT\n';
+  const unchanged = await editedReply(text);
+  const w = world(on, { core: command => command === 'sync' ? ok({ ...unchanged, receipt: undefined }) : ok(), file: text });
+  on('tool.call', async (_$, e) => ({ result: { type: 'update' as const, filePath: String(e.file_path), content: text,
+    structuredPatch: [], originalFile: text }, context: ['Original result context.'] }));
+  await start($);
+  const ordinary = await $.tool.call({ tool: 'Write', file_path: `${ROOT}/ordinary.txt`, content: text });
+  expect(ordinary.context).toEqual(['Original result context.']);
+  expect(w.commands()).toEqual(['open']);
+  const same = await $.tool.call({ tool: 'Write', file_path: WC, content: text });
+  expect(same.context).toEqual(['Original result context.']);
+});
+
 for (const trigger of ['plugin', 'manual', 'auto'] as const) {
   test(`unbudgeted oversized runner append falls back once (${trigger})`, HOST_FIXTURE, async ($, on) => {
     mock.env(on, {});
