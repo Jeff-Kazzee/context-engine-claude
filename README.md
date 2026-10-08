@@ -2,7 +2,9 @@
 
 **Release candidate:** tool-schema prose and fixtures are independently authored here. Publication still requires review of this exact snapshot and its fresh history; see [PROVENANCE.md](PROVENANCE.md).
 
-**Source approval and installation acceptance:** this candidate is in an open PR; main remains bootstrap-only. Source merge requires passing offline checks, independent review and Jeff's approval of the exact head. Real persistent plugin loading, interactive delivery and long-session performance remain unverified; these are installation/release acceptance gaps, not substitutes for source review. Do not recommend installation until a supported-host trial proves next-request delivery. No model evaluations or host configuration changes are part of the offline source checks.
+**Source approval and installation acceptance:** this candidate is in an open PR targeting `dev`. Changes move from the topic branch to `dev`, then through a separately approved promotion to `main`. Main remains bootstrap-only. Source merge requires passing offline checks, independent review and Jeff's approval of the exact head.
+
+Real persistent plugin loading, interactive delivery and long-session performance remain unverified. These are installation/release acceptance gaps, not substitutes for source review. Do not recommend installation until a supported-host trial proves next-request delivery. No model evaluations or host configuration changes are part of the offline source checks.
 
 **Shared-core correction:** Working Context writes now use an anchored, verified parent directory. Synthetic Linux parent-swap regressions cover swaps before open, temporary-file creation and rename. Both plugin candidates pin this correction; these checks do not establish real-host installation acceptance.
 
@@ -46,6 +48,16 @@ After the test passes and I approve the target-project scope, enable only the
 named project and report exact mode, versions, commands, config/backups changed,
 evidence, gaps and disable/uninstall steps. Preserve unrelated work.
 ```
+
+The [CI workflow](.github/workflows/ci.yml) checks the exact PR source commit on three hosts with Node 24.21.0. Its platform coverage is:
+
+| Host | Maintained coverage | Stateful support |
+| --- | --- | --- |
+| Linux | Core, setup and adapter suites | Supported with the documented Linux requirements |
+| Windows | Pure operations and refusal before state or setup mutation | Unsupported |
+| macOS | Pure operations and refusal before state or setup mutation | Unsupported |
+
+Actual Windows and macOS jobs passed on 2026-10-08 in [the initial CI run](https://github.com/Jeff-Kazzee/context-engine-claude/actions/runs/37730431649) at `af9b638f3c9725b1b0d7246df6f35949d0fcf351`. These baseline results do not validate later commits. Each updated PR head requires its own successful CI. Offline contract checks do not prove provider delivery, model behavior or interactive acceptance.
 
 ## 1. Check compatibility before installing
 

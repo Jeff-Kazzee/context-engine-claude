@@ -104,6 +104,7 @@ const stubIds = new Set<string>();
 let editedThisTurn = false;
 /** Potential edits are checked once the current batch's last root tool finishes. */
 let pendingWithinTurnEdit = false;
+let pendingReadNotice: ReturnType<typeof withinTurnReadNotice> = null;
 let lastNotifiedRevision: number | null = null;
 /** The plugin's `mode` option, as `register` received it. */
 let modeOption: unknown;
@@ -195,7 +196,7 @@ async function section($: EngineInterface, at: Opened) {
  * room is left at all). Folds the turn that just ended (Claude Code's last request, on top of the
  * Working Context delivered before it) into the turn reserve.
  */
-async function budgetNow($: EngineInterface): Promise<WorkingContextBudget | null> {
+async function budgetNow($: EngineInterface, observeTurn = true): Promise<WorkingContextBudget | null> {
   // Never lets a missing figure break a compaction: no figures, no budget.
   const quietly = <T>(what: string, f: () => Promise<T>): Promise<T | undefined> =>
     f().catch((err) => {
@@ -206,9 +207,9 @@ async function budgetNow($: EngineInterface): Promise<WorkingContextBudget | nul
   const breakdown = context?.breakdown as ContextBreakdown | undefined;
   const envTokens = (await quietly('CONTEXT_ENGINE_BUDGET_TOKENS', () => $.env.get('CONTEXT_ENGINE_BUDGET_TOKENS'))) ?? undefined;
   const b = workingContextBudget({ breakdown: breakdown ?? null, envTokens, turn: { contextTokens: context?.tokens, deliveredTokens: delivered, observed: turnInputs } });
-  delivered = undefined;
+  if (observeTurn) delivered = undefined;
   if (b) {
-    turnInputs = b.observed;
+    if (observeTurn) turnInputs = b.observed;
     log($, `Working Context budget ${b.budgetTokens} tokens${b.exhausted ? ' (no room: Compaction-only fallback)' : ''} (${b.source} ${b.sharedTokens} minus Pinned Prefix ${b.pinnedTokens} minus turn reserve ${b.reserveTokens}; turns observed ${b.observed.length})`, 'debug');
   }
   return b;
@@ -357,6 +358,7 @@ export const register: Register = (on, options) => {
     turnInputs = [];
     editedThisTurn = false;
     pendingWithinTurnEdit = false;
+    pendingReadNotice = null;
     lastNotifiedRevision = null;
     stubIds.clear();
     await ensureOpen($);
@@ -585,22 +587,31 @@ export const register: Register = (on, options) => {
       while (toolsDrained) await toolsDrained;
       releaseBoundary = await acquireBoundary(at);
       if (!pendingWithinTurnEdit) return result;
-      const room = await budgetNow($);
+      // This partial turn must not consume the last replacement's measurement baseline.
+      const room = await budgetNow($, false);
       if (room?.exhausted) return result;
       const reply = await core($, at, 'sync', undefined, room?.budgetTokens, WITHIN_TURN_MAX_BYTES);
-      pendingWithinTurnEdit = false;
-      const data = withinTurnReadNotice(reply, lastNotifiedRevision, at.sessionId, coreArgv($.plugin.root, 'sync', at, undefined, undefined, coreCliOption)[1]!);
+      const fresh = withinTurnReadNotice(reply, lastNotifiedRevision, at.sessionId, coreArgv($.plugin.root, 'sync', at, undefined, undefined, coreCliOption)[1]!);
+      // Core receipts are already acknowledged. Retain only validated static metadata for a later carrier.
+      if (fresh) pendingReadNotice = fresh;
+      else if (pendingReadNotice && (reply.revision !== pendingReadNotice.revision
+          || reply.delivery?.sha256 !== pendingReadNotice.sha256)) pendingReadNotice = null;
+      const data = pendingReadNotice;
       if (!data) {
+        pendingWithinTurnEdit = false;
         if (reply.receipt) log($, reply.receipt.text);
         if (reply.delivery?.kind === 'not-ready') log($, `Working Context read notice was not added (${reply.delivery.reason}). Read it with ordinary tools or use the next compaction boundary.`);
         return result;
       }
+      if (reply.delivery?.kind !== 'ready') return result;
       const prior = result.context ?? [];
       // The host clips combined reminders above 200k characters. Never submit a notice that the host would clip.
       if (prior.reduce((size, text) => size + text.length, 0) + data.text.length > 190_000) {
         log($, 'Working Context read notice was not added because this tool already carries too much context.');
         return result;
       }
+      pendingWithinTurnEdit = false;
+      pendingReadNotice = null;
       lastNotifiedRevision = data.revision;
       log($, `Working Context revision ${data.revision}, sha256 ${data.sha256}, read notice submitted. Editable content has not been delivered.`, 'debug');
       return { ...result, context: [...prior, data.text] };
@@ -620,6 +631,7 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     pendingWithinTurnEdit = false;
+    pendingReadNotice = null;
     lastNotifiedRevision = null;
     await abandonCore($);
     opening = null;

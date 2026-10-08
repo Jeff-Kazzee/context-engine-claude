@@ -45,7 +45,7 @@ async function compactNow($: EngineInterface, scheduled: number, input: NonNulla
   }
 }
 
-export const register: Register = (on, options) => {
+export const register: Register = (on, options = {}) => {
   coreCliOption = options.coreCli;
   on('session.start', async ($, e, next) => {
     generation++;

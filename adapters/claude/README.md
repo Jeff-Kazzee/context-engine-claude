@@ -29,3 +29,5 @@ Bash with a changed/restored or unobserved Working Context causes conservative s
 The installer stores the canonical shared-core CLI path in each plugin's supported `coreCli` option. Installed plugins call that retained checkout, including paths with spaces. Keep the checkout in place. If it moves, uninstall and reinstall Context Engine from the new location. An explicit invalid path is refused rather than replaced with a guessed cache path.
 
 For source-layout development, omitting `coreCli` selects its explicit `checkout-relative` default. The installer always replaces that default with the retained checkout's absolute path. Empty or malformed explicit values remain errors.
+
+If a tool result has no room for an accepted edit notice, the adapter retains its static revision metadata for a later carrier. It rechecks the current delivery budget before returning the notice. Mid-turn budget estimates preserve the previous replacement baseline until the turn boundary. Status requires both installed plugins to be enabled and configured with canonical, readable core CLI paths. These configuration checks do not establish interactive loading.

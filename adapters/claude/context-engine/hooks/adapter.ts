@@ -186,7 +186,7 @@ function withinTurnDelivery(reply: CoreReply, lastSubmittedRevision: number | nu
 export function withinTurnReadNotice(reply: CoreReply, lastNotifiedRevision: number | null, sessionId: string, coreCli: string): { revision: number; sha256: string; text: string } | null {
   const data = withinTurnDelivery(reply, lastNotifiedRevision);
   if (!data) return null;
-  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new CoreError('invalid Working Context session identity');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(sessionId)) throw new CoreError('invalid Working Context session identity');
   // Reuse the installed CLI path validation. POSIX single quoting keeps path characters inert.
   const cli = coreArgv('/unused', 'sync', { sessionId, projectRoot: '/' }, undefined, undefined, coreCli)[1]!;
   const quoted = "'" + cli.replaceAll("'", "'\\''") + "'";
