@@ -145,10 +145,9 @@ test('[CORE-023] a CLI process killed inside the operation lock and append lease
   const l = layout(f.projectRoot, 'S1', f.stateDir);
   assert.ok(existsSync(`${l.lock}.op`) && existsSync(`${l.events}.append.lock`), 'the kill landed inside both');
 
-  const started = Date.now();
+  // Exit 0 means both dead holders were taken over, not waited out: a live holder ends in SerializeTimeout.
   const next = await startCli(f, ['record', ...opening], { input: event('SECOND') }).done;
   assert.equal(next.code, 0, next.stdout + next.stderr);
-  assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
   for (const lease of [`${l.lock}.op`, `${l.events}.append.lock`]) assert.ok(!existsSync(lease), `${lease} is not stranded`);
   const text = readFileSync(l.workingContext, 'utf8');
   assert.equal(count(text, 'SECOND'), 1);

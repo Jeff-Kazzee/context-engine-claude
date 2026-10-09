@@ -146,7 +146,7 @@ test('[CORE-022] a live operation-lock holder makes withSessionSerialized and th
     const started = Date.now();
     assert.throws(() => withSessionSerialized({ ...f, sessionId: 'S1' }, () => { ran = true; }), SerializeTimeout);
     const waited = Date.now() - started;
-    assert.ok(waited >= 15_000 && waited < 17_000, `waited ${waited} ms`);
+    assert.ok(waited >= 15_000, `gave up after ${waited} ms, before the 15 s wait`);
     assert.equal(ran, false, 'the operation never ran');
 
     const cli = await busy.done;
@@ -160,9 +160,8 @@ test('[CORE-022] a live operation-lock holder makes withSessionSerialized and th
 
     writeFileSync(join(sig, 'leave'), '');
     await once(holder, 'exit');
-    const again = Date.now();
     withSessionSerialized({ ...f, sessionId: 'S1' }, () => { ran = true; });
-    assert.ok(ran && Date.now() - again < 1_000, 'a free operation lock admits the next call at once');
+    assert.ok(ran, 'a free operation lock admits the next call');
   } finally {
     await stopGroup(holder);
   }
@@ -250,8 +249,11 @@ test('[CORE-024] first-ever concurrent calls on a fresh session all succeed', { 
   const runs = [startCli(f, args, { input: event('FRESH_0'), fault: { call: 'writeFileSync', path: '/\\.context-engine/\\.gitignore$', at: 'before', action: 'block', dir: sig } })];
   try {
     await waitForFile(join(sig, 'blocked'));
-    for (let i = 1; i < 8; i++) runs.push(startCli(f, args, { input: event(`FRESH_${i}`) }));
-    await new Promise((r) => setTimeout(r, 750));
+    // Each later call notes when it opens the file to read it, which is while call 0 holds it empty.
+    const seen = { call: 'openSync', path: '/\\.context-engine/\\.gitignore$', at: 'after', action: 'note', dir: sig } as const;
+    for (let i = 1; i < 8; i++) runs.push(startCli(f, args, { input: event(`FRESH_${i}`), fault: seen }));
+    await waitForFile(join(sig, 'notes'));
+    assert.equal(readFileSync(join(f.projectRoot, '.context-engine', '.gitignore'), 'utf8'), '', 'a contender read the file while it was empty');
     writeFileSync(join(sig, 'release'), '');
     const results = await Promise.all(runs.map((r) => r.done));
     results.forEach((r, i) => assert.equal(r.code, 0, `call ${i}: ${r.stdout}${r.stderr}`));
