@@ -292,3 +292,44 @@ test('[CORE-005] a model write racing materialization is committed or logged, ne
     await stopGroup(racing.child);
   }
 });
+
+// Writes <sig>/<name>-ready, then calls sessionFrameKey on each directory as soon as <sig>/go-<i>
+// exists, and writes what it got.
+const FRAME_KEY_RACER = `
+import { existsSync, writeFileSync } from 'node:fs';
+const [dirs, sig, name] = process.argv.slice(1);
+const { sessionFrameKey } = await import(${JSON.stringify(join(here, 'store.ts'))});
+const list = JSON.parse(dirs);
+writeFileSync(sig + '/' + name + '-ready', '');
+for (let i = 0; i < list.length; i++) {
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(sig + '/go-' + i)) if (Date.now() > deadline) process.exit(3);
+  let got;
+  try { got = sessionFrameKey(list[i]); } catch (e) { got = 'ERROR ' + e.message; }
+  writeFileSync(sig + '/' + name + '-' + i, got);
+}
+`;
+
+test('[CORE-015] a process reading the frame key while another publishes it gets the whole key', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const sig = tempDir('frame-key-publish');
+  const publisher = startCli(f, ['open', ...opening], { fault: { call: 'linkSync', path: '/frame-key$', at: 'after', action: 'block', dir: sig } });
+  const l = layout(f.projectRoot, 'S1', f.stateDir);
+  let reader: ReturnType<typeof spawn> | undefined;
+  try {
+    await waitForFile(join(sig, 'blocked'));
+    reader = spawn(process.execPath, ['--input-type=module', '-e', FRAME_KEY_RACER, JSON.stringify([l.stateDir]), sig, 'R'], { stdio: 'ignore', detached: true });
+    await waitForFile(join(sig, 'R-ready'));
+    // The publisher has linked the key into place and still holds its temp name.
+    writeFileSync(join(sig, 'go-0'), '');
+    await new Promise((r) => setTimeout(r, 300));
+    writeFileSync(join(sig, 'release'), '');
+    const opened = await publisher.done;
+    assert.equal(opened.code, 0, opened.stdout + opened.stderr);
+    await waitForFile(join(sig, 'R-0'));
+    assert.equal(readFileSync(join(sig, 'R-0'), 'utf8'), JSON.parse(opened.stdout).frameKey);
+  } finally {
+    await stopGroup(publisher.child);
+    if (reader) await stopGroup(reader);
+  }
+});
