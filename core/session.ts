@@ -517,7 +517,13 @@ class Core {
     const read = readWorkingContextFile(this.l.workingContext, Math.min(SNAPSHOT_MAX_BYTES, Math.max(this.hardLimit * 4, statSync(join(this.l.revisions, `${head.rev}.md`)).size)));
     const current = read && typeof read !== 'string' ? decode(read) : null;
     if (current === null || !current.trim() || [head.parent, head.sha].includes(sha(current))) return;
-    appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', rejected: current });
+    // A retry after a crash between this append and the rename finds the edit already kept.
+    let last: Record<string, unknown> | undefined;
+    for (const entry of readLog(this.l.events)) if (entry.type === 'restored' && entry.rev === head.rev) last = entry;
+    if (last?.rejected !== current) {
+      try { appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', rejected: current }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'CE_LOG_APPEND_AMBIGUOUS') this.appendUncertain = true; throw error; }
+    }
     const receipt: Receipt = { kind: 'restored', revision: head.rev, reason: 'unmaterialized-append', chars, approxTokens: approxTokens(chars), text: `Context Engine: revision ${head.rev} was restored because committed runner events had not yet reached the Working Context. The intervening edit is kept in the Event Log; read the restored file before editing it again. ${sizeReadout(chars)}` };
     // The restore describes the newest revision, so it leads. Earlier notices keep their text first.
     const pending = this.pendingReceipt;
