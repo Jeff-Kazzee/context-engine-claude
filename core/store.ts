@@ -197,7 +197,12 @@ export function ensureDirs(l: Layout, stateRoot: string): void {
     finally { closeSync(file); }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-    const existing = readWorkingContextFile(join(managed, '.gitignore'), 65536);
+    // A concurrent first open creates this file empty and then writes it. Wait for that write.
+    let existing = readWorkingContextFile(join(managed, '.gitignore'), 65536);
+    for (const deadline = Date.now() + 2_000; Buffer.isBuffer(existing) && existing.length === 0 && Date.now() < deadline;) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+      existing = readWorkingContextFile(join(managed, '.gitignore'), 65536);
+    }
     if (!Buffer.isBuffer(existing)) throw new Error('.context-engine/.gitignore must be a regular, unlinked file');
     const rules = existing.toString('utf8').split(/\r?\n/).map(v => v.trim()).filter(v => v && !v.startsWith('#'));
     if (rules.at(-1) !== '*') throw new Error('.context-engine/.gitignore must end with a blanket * rule; fix it before enabling Context Engine');
