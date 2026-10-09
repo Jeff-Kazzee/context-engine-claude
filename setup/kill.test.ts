@@ -1,0 +1,48 @@
+// A setup process killed mid-run skips every in-process rollback. The next runs must finish, undo or
+// refuse the interrupted operation, and never adopt half-applied runner config as a new baseline.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tempDir } from '../core/testing.ts';
+import { killGroup, startSetup, waitForFile } from './testing/process.ts';
+import { world } from './testing/world.ts';
+
+const SETTINGS = '{"theme": "dark",\n  "env": {"FOO": "1"}}\n';
+// Seeded registries: a fresh install and uninstall leaves absent ones behind as runner residue.
+const INSTALLED = '{"version": 2, "plugins": {"other@mkt": [{"scope": "user", "installPath": "/opt/other", "version": "1.0.0"}]}}\n';
+const KNOWN = '{"mkt": {"source": {"source": "directory", "path": "/opt/mkt"}, "installLocation": "/opt/mkt"}}\n';
+const read = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
+
+test('[LIFE-015] SIGKILL during Claude install never becomes a silent baseline', async () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  const tracked = [settings, join(w.claudeHome, 'plugins', 'installed_plugins.json'), join(w.claudeHome, 'plugins', 'known_marketplaces.json')];
+  mkdirSync(join(w.claudeHome, 'plugins'));
+  for (const [path, text] of [[tracked[0]!, SETTINGS], [tracked[1]!, INSTALLED], [tracked[2]!, KNOWN]] as const) writeFileSync(path, text);
+  const preKill = tracked.map(read);
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  assert.match(read(settings)!, /extraKnownMarketplaces/, 'the kill left the marketplace half-applied');
+
+  const lock = join(w.stateDir, 'setup', 'claude.setup.lock');
+  for (const command of ['enable', 'disable', 'install', 'uninstall']) {
+    const blocked = w.ce([command]);
+    assert.notEqual(blocked.status, 0, `${command} ran past the stale lock`);
+    assert.ok(blocked.stderr.includes(lock), `${command} names ${lock}:\n${blocked.stderr}`);
+  }
+  rmSync(lock);
+
+  const again = w.ce(['install']);
+  if (again.status !== 0) {
+    assert.ok(again.stderr.includes(join(w.stateDir, 'setup', 'backups')), `a refusal names the orphan snapshot:\n${again.stderr}`);
+    return;
+  }
+  const removed = w.ce(['uninstall']);
+  assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+  assert.deepEqual(tracked.map(read), preKill, `uninstall returns the pre-kill bytes. It said:\n${removed.stdout}`);
+  assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
+});
