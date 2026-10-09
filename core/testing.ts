@@ -8,20 +8,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FaultPlan } from './process-faults.ts';
 
-const made: string[] = [];
+let root: string | undefined;
 
-// Each test file runs in its own process. Every directory it made goes when that process exits.
+// Each test file runs in its own process. Its directories share one root, which goes when that
+// process exits, together with anything a test renamed or created beside them.
 process.on('exit', () => {
-  for (const dir of made) {
-    try { rmSync(dir, { recursive: true, force: true }); }
-    catch (e) { process.stderr.write(`could not remove test directory ${dir}: ${(e as Error).message}\n`); }
-  }
+  if (root === undefined) return;
+  try { rmSync(root, { recursive: true, force: true }); }
+  catch (e) { process.stderr.write(`could not remove test directory ${root}: ${(e as Error).message}\n`); }
 });
 
 export function tempDir(label: string): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), `ce-${label}-`)));
-  made.push(dir);
-  return dir;
+  root ??= realpathSync(mkdtempSync(join(tmpdir(), 'ce-test-')));
+  return realpathSync(mkdtempSync(join(root, `ce-${label}-`)));
 }
 
 export function fixture() {
