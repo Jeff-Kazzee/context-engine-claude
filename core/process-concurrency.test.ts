@@ -270,7 +270,7 @@ test('[CORE-024] first-ever concurrent calls on a fresh session all succeed', { 
   }
 });
 
-test('[CORE-005] a model write racing materialization is committed or logged, never lost', { timeout: 30_000 }, async () => {
+test('[CORE-005] an edit made after record() syncs and before it writes the Working Context is kept in the Event Log with a receipt', { timeout: 30_000 }, async () => {
   const f = fixture();
   const sig = tempDir('race-sig');
   assert.equal((await startCli(f, ['record', ...opening], { input: event('BASE') }).done).code, 0);
