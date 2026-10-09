@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openSession, parseTurns, SerializeTimeout, withSessionSerialized } from './index.ts';
+import { openSession, parseTurns, recall, SerializeTimeout, withSessionSerialized } from './index.ts';
 import { processStartMarker, readLock } from './lock.ts';
 import { layout, type Layout } from './store.ts';
 import { eventLog, fixture, ownerProcess, startCli, stopGroup, tempDir, waitForFile } from './testing.ts';
@@ -266,7 +266,6 @@ test('[CORE-024] first-ever concurrent calls on a fresh session all succeed', { 
   }
 });
 
-
 test('[CORE-005] a model write racing materialization is committed or logged, never lost', { timeout: 30_000 }, async () => {
   const f = fixture();
   const sig = tempDir('race-sig');
@@ -331,5 +330,50 @@ test('[CORE-015] a process reading the frame key while another publishes it gets
   } finally {
     await stopGroup(publisher.child);
     if (reader) await stopGroup(reader);
+  }
+});
+
+test('[CORE-015] two processes creating the frame key agree on one whole key', { timeout: 60_000 }, async () => {
+  const root = tempDir('frame-keys');
+  const sig = tempDir('frame-keys-sig');
+  const dirs = range(50).map((i) => join(root, `s${i}`));
+  for (const d of dirs) mkdirSync(d, { mode: 0o700 });
+  const racers = ['A', 'B'].map((name) => spawn(process.execPath, ['--input-type=module', '-e', FRAME_KEY_RACER, JSON.stringify(dirs), sig, name], { stdio: 'ignore', detached: true }));
+  try {
+    for (const [i, dir] of dirs.entries()) {
+      writeFileSync(join(sig, `go-${i}`), '');
+      await waitForFile(join(sig, `A-${i}`));
+      await waitForFile(join(sig, `B-${i}`));
+      const [a, b] = ['A', 'B'].map((n) => readFileSync(join(sig, `${n}-${i}`), 'utf8'));
+      assert.match(a!, /^[0-9a-f]{32}$/, `round ${i}: ${a}`);
+      assert.equal(b, a, `round ${i}: both processes return the same key`);
+      assert.equal(readFileSync(join(dir, 'frame-key'), 'utf8'), `${a}\n`);
+      assert.equal(statSync(join(dir, 'frame-key')).mode & 0o777, 0o600);
+    }
+  } finally {
+    for (const r of racers) await stopGroup(r);
+  }
+});
+
+test('[CORE-026] two sessions record concurrently from separate processes on a fresh project', { timeout: 60_000 }, async () => {
+  const f = fixture();
+  const owners = [ownerProcess(), ownerProcess()];
+  try {
+    const sessions = ['S1', 'S2'];
+    const runs = sessions.flatMap((s, k) => range(4).map((i) => startCli(f, ['record', '--session', s, '--runner', 'test', '--hard-limit', '10000', '--owner-pid', String(owners[k]!.pid)], { input: event(`${s}_EVENT_${i}`) })));
+    for (const r of await Promise.all(runs.map((c) => c.done))) assert.equal(r.code, 0, r.stdout + r.stderr);
+    for (const [k, s] of sessions.entries()) {
+      const other = sessions[1 - k]!;
+      const l = layout(f.projectRoot, s, f.stateDir);
+      const text = readFileSync(l.workingContext, 'utf8');
+      for (const i of range(4)) {
+        assert.equal(count(text, `${s}_EVENT_${i}\n`), 1);
+        assert.equal(count(text, `${other}_EVENT_${i}`), 0);
+      }
+      assert.equal(JSON.parse(readFileSync(l.head, 'utf8')).rev, 4);
+      assert.equal(recall({ ...f, sessionId: s, query: `${other}_EVENT_1` }).total, 0);
+    }
+  } finally {
+    for (const o of owners) await stopGroup(o);
   }
 });
