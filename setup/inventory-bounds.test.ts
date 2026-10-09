@@ -59,3 +59,20 @@ test('[PERF-006] inventory boundaries accept 4,096 paths and depth 64', () => {
     else assert.throws(take, INVENTORY);
   }
 });
+
+test('[PERF-006] namespace cleanup over budget retains the namespace', () => {
+  for (const [files, accepted] of [[4096, true], [4097, false]] as const) {
+    const root = tempDir(`namespace-${files}`), namespace = join(root, 'cache', 'context-engine');
+    const snap = takeSnapshot({ backupRoot: join(root, 'backups'), kind: 'synthetic', files: [], watch: [], namespaced: [namespace] });
+    fs.mkdirSync(namespace, { recursive: true });
+    for (let i = 0; i < files; i++) fs.writeFileSync(join(namespace, `f${i}`), '');
+    const ledger = completeLedger(snap);
+    if (accepted) {
+      revert(ledger, {}, {});
+      assert.equal(fs.existsSync(namespace), false);
+    } else {
+      assert.throws(() => revert(ledger, {}, {}), /cleanup exceeds inventory limits; retained/);
+      assert.equal(fs.readdirSync(namespace).length, files, 'every file remains');
+    }
+  }
+});
