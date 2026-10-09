@@ -10,14 +10,17 @@ import { tempDir } from './testing.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-// Uses every helper that makes a temp directory, including a CLI run with an owner process.
+// Uses every helper that makes a temp directory, including a CLI run with an owner process, and
+// renames one directory the way the parent-swap tests do.
 const PROBE = `
+import { renameSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, ownerProcess, startCli, stopGroup, tempDir } from ${JSON.stringify(join(here, 'testing.ts'))};
 test('helpers', async () => {
   const f = fixture();
-  tempDir('probe');
+  const moved = tempDir('probe');
+  renameSync(moved, moved + '-held');
   const owner = ownerProcess();
   try {
     const r = await startCli(f, ['record', '--session', 'S1', '--runner', 'test', '--hard-limit', '1000', '--owner-pid', String(owner.pid)], { input: JSON.stringify({ role: 'user', text: 'probe' }) }).done;
