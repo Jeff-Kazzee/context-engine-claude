@@ -23,11 +23,13 @@ import {
   assertWorkingContextDir,
   removeTemps,
   removeDirectoryEntries,
+  replaceWorkingContext,
   resolveStateRoot,
   sessionFrameKey,
   sha,
   truncateTornTail,
   type Layout,
+  type WorkingContextRead,
 } from './store.ts';
 import { countHeaders, parseTurns, renderTurns, type Turn } from './turns.ts';
 import { checkRefs, experimentOn, staleText, type StaleReport } from './refs.ts';
@@ -500,34 +502,39 @@ class Core {
   }
 
   /**
-   * Writes committed text over the Working Context. Just before the rename, a file that is neither
-   * the parent this revision was built on nor the new text holds an edit made since the last sync,
-   * or while the adapter was down. It is not committed over the append. It is kept in the Event Log
-   * with a restore receipt. An edit landing between that read and the rename is still overwritten.
+   * Writes committed text over the Working Context. A file that is neither the parent this revision
+   * was built on nor the new text holds an edit made since the last sync, or while the adapter was
+   * down. It is not committed over the append. It is kept in the Event Log with a restore receipt.
+   * replaceWorkingContext() says which edits can still be overwritten unseen.
    */
   private materialize(head: Head, text: string): void {
     crashPoint('before-wc');
-    assertWorkingContextDir(this.l.workingContext);
-    atomicWrite(this.l.workingContext, text, 'wc-tmp', () => this.keepStaleEdit(head, text.length));
+    const kept = new Set<string>();
+    const bound = Math.min(SNAPSHOT_MAX_BYTES, Math.max(this.hardLimit * 4, statSync(join(this.l.revisions, `${head.rev}.md`)).size));
+    replaceWorkingContext(this.l.workingContext, text, bound, (read) => this.keepStaleEdit(head, text.length, read, kept));
     head.materialized = true;
     atomicWrite(this.l.head, JSON.stringify(head), 'head-tmp');
   }
 
-  private keepStaleEdit(head: Head, chars: number): void {
-    const read = readWorkingContextFile(this.l.workingContext, Math.min(SNAPSHOT_MAX_BYTES, Math.max(this.hardLimit * 4, statSync(join(this.l.revisions, `${head.rev}.md`)).size)));
-    const current = read && typeof read !== 'string' ? decode(read) : null;
-    if (current === null || !current.trim() || [head.parent, head.sha].includes(sha(current))) return;
+  /** Keeps one stale edit. True when it appended a row, which gave other edits time to land. */
+  private keepStaleEdit(head: Head, chars: number, read: WorkingContextRead, kept: Set<string>): boolean {
+    const current = Buffer.isBuffer(read) ? decode(read) : null;
+    if (current === null || !current.trim() || [head.parent, head.sha].includes(sha(current)) || kept.has(current)) return false;
+    kept.add(current);
     // A retry after a crash between this append and the rename finds the edit already kept.
     let last: Record<string, unknown> | undefined;
     for (const entry of readLog(this.l.events)) if (entry.type === 'restored' && entry.rev === head.rev) last = entry;
-    if (last?.rejected !== current) {
+    const appended = last?.rejected !== current;
+    if (appended) {
       try { appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', rejected: current }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'CE_LOG_APPEND_AMBIGUOUS') this.appendUncertain = true; throw error; }
     }
     const receipt: Receipt = { kind: 'restored', revision: head.rev, reason: 'unmaterialized-append', chars, approxTokens: approxTokens(chars), text: `Context Engine: revision ${head.rev} was restored because committed runner events had not yet reached the Working Context. The intervening edit is kept in the Event Log; read the restored file before editing it again. ${sizeReadout(chars)}` };
     // The restore describes the newest revision, so it leads. Earlier notices keep their text first.
+    // One notice covers every edit kept for the same revision.
     const pending = this.pendingReceipt;
-    this.pendingReceipt = pending ? { ...receipt, text: `${pending.text}\n${receipt.text}` } : receipt;
+    if (pending?.kind !== 'restored' || pending.revision !== head.rev) this.pendingReceipt = pending ? { ...receipt, text: `${pending.text}\n${receipt.text}` } : receipt;
+    return appended;
   }
 
   private writeWorkingContext(text: string): void {
