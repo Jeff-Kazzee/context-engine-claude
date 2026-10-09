@@ -20,6 +20,8 @@ const event = (text: string) => JSON.stringify({ role: 'tool', text });
 const count = (text: string, needle: string) => text.split(needle).length - 1;
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+/** The core's temp file for new Working Context bytes, made just before they replace the file. */
+const WC_TEMP = '/context\\.md\\.ce-\\d+-[0-9a-f]{8}\\.tmp$';
 
 /** The bytes of every session file a call could change, by path. */
 function sessionFiles(l: Layout): Record<string, string> {
@@ -273,7 +275,7 @@ test('[CORE-005] a model write racing materialization is committed or logged, ne
   const l = layout(f.projectRoot, 'S1', f.stateDir);
   const racing = startCli(f, ['record', ...opening], {
     input: event('APPEND_SENTINEL'),
-    fault: { call: 'openSync', path: '/context\\.md\\.ce-\\d+-[0-9a-f]{8}\\.tmp$', at: 'before', action: 'block', dir: sig },
+    fault: { call: 'openSync', path: WC_TEMP, at: 'before', action: 'block', dir: sig },
   });
   try {
     await waitForFile(join(sig, 'blocked'));
@@ -287,6 +289,33 @@ test('[CORE-005] a model write racing materialization is committed or logged, ne
     const receipt = JSON.parse(r.stdout).receipt;
     assert.ok(committed || (logged && receipt?.kind === 'restored'), `RACE_SENTINEL was ${committed ? 'committed' : logged ? 'logged without a receipt' : 'lost: in no revision and no Event Log row'}`);
     assert.equal(count(readFileSync(l.workingContext, 'utf8'), 'APPEND_SENTINEL'), 1, 'the runner append is kept too');
+  } finally {
+    await stopGroup(racing.child);
+  }
+});
+
+test('[CORE-005] an edit racing an append after a committed model edit gets a restore receipt for the new HEAD', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const sig = tempDir('receipt-sig');
+  assert.equal((await startCli(f, ['record', ...opening], { input: event('BASE') }).done).code, 0);
+  const l = layout(f.projectRoot, 'S1', f.stateDir);
+  const base = readFileSync(l.workingContext, 'utf8');
+  writeFileSync(l.workingContext, `${base}\n[[CTX_TURN 2 role=notes]]\nFIRST_EDIT\n`);
+  const racing = startCli(f, ['record', ...opening], {
+    input: event('APPEND_SENTINEL'),
+    fault: { call: 'openSync', path: WC_TEMP, at: 'before', action: 'block', dir: sig },
+  });
+  try {
+    await waitForFile(join(sig, 'blocked'));
+    writeFileSync(l.workingContext, `${base}\n[[CTX_TURN 2 role=notes]]\nSECOND_EDIT\n`);
+    writeFileSync(join(sig, 'release'), '');
+    const r = await racing.done;
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const result = JSON.parse(r.stdout);
+    assert.equal(JSON.parse(readFileSync(l.head, 'utf8')).rev, 3, 'FIRST_EDIT is revision 2 and the append is revision 3');
+    assert.equal(result.revision, 3);
+    assert.deepEqual([result.receipt?.kind, result.receipt?.revision], ['restored', 3]);
+    assert.match(result.receipt.text, /edit committed as revision 2[\s\S]*revision 3 was restored/);
   } finally {
     await stopGroup(racing.child);
   }
