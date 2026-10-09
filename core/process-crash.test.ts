@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { openSession } from './index.ts';
 import type { FaultPlan } from './process-faults.ts';
@@ -208,5 +208,34 @@ test('[CORE-005] a file renamed over the Working Context while a stale edit is l
     assert.equal(count(assertRecovered(f).text, 'SENTINEL'), 1);
   } finally {
     await stopGroup(owner);
+  }
+});
+
+test('[CORE-001] a first open killed between creating and writing the managed .gitignore does not wedge the project', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const ignore = join(f.projectRoot, '.context-engine', '.gitignore');
+  const killed = await startCli(f, ['record', ...opening], { input: event('FIRST'), fault: { call: 'writeFileSync', path: '/\\.context-engine/\\.gitignore$', at: 'before', action: 'kill' } }).done;
+  assert.equal(killed.signal, 'SIGKILL', killed.stderr);
+  assert.equal(readFileSync(ignore, 'utf8'), '', 'the kill left an empty managed .gitignore');
+
+  const next = await startCli(f, ['record', ...opening], { input: event('SECOND') }).done;
+  assert.equal(next.code, 0, next.stdout + next.stderr);
+  assert.equal(readFileSync(ignore, 'utf8').trim().split('\n').at(-1), '*');
+  assert.equal(count(readFileSync(layout(f.projectRoot, 'S1', f.stateDir).workingContext, 'utf8'), 'SECOND'), 1);
+
+  // Only an empty, single-name file of this user is repaired. Anything else still refuses unchanged.
+  for (const [label, prepare, refusal] of [
+    ['foreign rules', (path: string) => writeFileSync(path, 'node_modules\n'), /blanket \* rule/],
+    ['a hard link', (path: string) => { const other = join(tempDir('ignore-link'), 'other'); writeFileSync(other, ''); linkSync(other, path); }, /regular, unlinked/],
+  ] as const) {
+    const g = fixture();
+    mkdirSync(join(g.projectRoot, '.context-engine'), { mode: 0o700 });
+    const path = join(g.projectRoot, '.context-engine', '.gitignore');
+    prepare(path);
+    const before = readFileSync(path);
+    const refused = await startCli(g, ['record', ...opening], { input: event('REFUSED') }).done;
+    assert.equal(refused.code, 1, `${label}: ${refused.stdout}`);
+    assert.match(JSON.parse(refused.stdout).error, refusal, label);
+    assert.deepEqual(readFileSync(path), before, `${label} is left unchanged`);
   }
 });
