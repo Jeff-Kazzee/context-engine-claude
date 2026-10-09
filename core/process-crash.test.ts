@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { openSession } from './index.ts';
 import type { FaultPlan } from './process-faults.ts';
@@ -205,6 +205,32 @@ test('[CORE-005] a file renamed over the Working Context while a stale edit is l
     assert.equal(rejected.filter((t) => t.includes('FIRST_STALE')).length, 1);
     assert.equal(rejected.filter((t) => t.includes('RENAMED_IN')).length, 1, 'the check after the append saw the renamed file');
     assert.equal(count(assertRecovered(f).text, 'SENTINEL'), 1);
+  } finally {
+    await stopGroup(owner);
+  }
+});
+
+test('[CORE-005] a Working Context directory swapped for a link during a kept edit refuses with the link error', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const owner = ownerProcess();
+  const sig = tempDir('swap-sig');
+  try {
+    const own = [...opening, '--owner-pid', String(owner.pid)];
+    assert.equal((await startCli(f, ['record', ...own], { input: event('BASE') }).done).code, 0);
+    const halted = await startCli(f, ['record', ...own], { input: event('SENTINEL'), fault: { call: 'renameSync', path: '/HEAD$', at: 'after', action: 'kill' } }).done;
+    assert.equal(halted.signal, 'SIGKILL', halted.stderr);
+    const l = layout(f.projectRoot, 'S1', f.stateDir);
+    writeFileSync(l.workingContext, `${readFileSync(l.workingContext, 'utf8')}\n[[CTX_TURN 2 role=notes]]\nSTALE_EDIT\n`);
+
+    const recovering = startCli(f, ['sync', ...own], { fault: { call: 'fsyncSync', path: '/events\\.jsonl$', contains: '"type":"restored"', at: 'after', action: 'block', dir: sig } });
+    await waitForFile(join(sig, 'blocked'));
+    const dir = dirname(l.workingContext);
+    renameSync(dir, `${dir}-moved`);
+    symlinkSync(`${dir}-moved`, dir);
+    writeFileSync(join(sig, 'release'), '');
+    const r = await recovering.done;
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.match(JSON.parse(r.stdout).error, /symbolic link/, 'the refusal names the link, not a descriptor error from cleanup');
   } finally {
     await stopGroup(owner);
   }
