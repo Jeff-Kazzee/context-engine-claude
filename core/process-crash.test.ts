@@ -155,3 +155,28 @@ test('[CORE-023] a CLI process killed inside the operation lock and append lease
   assert.equal(count(text, 'FIRST'), 0);
   eventLog(l.events);
 });
+
+test('[CORE-005] a recovery killed after keeping a stale edit keeps it once on retry', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const owner = ownerProcess();
+  try {
+    const own = [...opening, '--owner-pid', String(owner.pid)];
+    assert.equal((await startCli(f, ['record', ...own], { input: event('BASE') }).done).code, 0);
+    const halted = await startCli(f, ['record', ...own], { input: event('SENTINEL'), fault: { call: 'renameSync', path: '/HEAD$', at: 'after', action: 'kill' } }).done;
+    assert.equal(halted.signal, 'SIGKILL', halted.stderr);
+    const l = layout(f.projectRoot, 'S1', f.stateDir);
+    writeFileSync(l.workingContext, `${readFileSync(l.workingContext, 'utf8')}\n[[CTX_TURN 2 role=notes]]\nSTALE_EDIT\n`);
+    const kept = () => eventLog(l.events).filter((r) => r.type === 'restored' && String(r.rejected).includes('STALE_EDIT')).length;
+
+    const crashed = await startCli(f, ['sync', ...own], { fault: { call: 'renameSync', path: '/context\\.md$', at: 'before', action: 'kill' } }).done;
+    assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+    assert.equal(kept(), 1, 'the first recovery kept the edit before it died');
+    const retried = await startCli(f, ['sync', ...own]).done;
+    assert.equal(retried.code, 0, retried.stdout + retried.stderr);
+    assert.equal(kept(), 1, 'the retried recovery does not keep the same edit twice');
+    assert.equal(JSON.parse(retried.stdout).receipt?.kind, 'restored', 'the retry still reports the restore');
+    assert.equal(count(assertRecovered(f).text, 'SENTINEL'), 1);
+  } finally {
+    await stopGroup(owner);
+  }
+});
