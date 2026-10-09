@@ -225,10 +225,18 @@ const FRAME_KEY = /^[0-9a-f]{32}$/;
 
 /** The frame key stored at `path`, or null when there is none or it is not a whole key. */
 function storedFrameKey(path: string): string | null {
-  try {
-    const text = readBytes(path,33)?.toString('utf8').trim();
-    return text && FRAME_KEY.test(text) ? text : null;
-  } catch(e) { if((e as NodeJS.ErrnoException).code==='CE_SIZE_LIMIT')return null;throw e; }
+  for (const deadline = Date.now() + 2_000; ;) {
+    try {
+      const text = readBytes(path,33)?.toString('utf8').trim();
+      return text && FRAME_KEY.test(text) ? text : null;
+    } catch(e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if(code==='CE_SIZE_LIMIT')return null;
+      // Another opener's publication gives the key two names until it removes its temp name.
+      if(code!=='CE_STATE_LINK_COUNT' || Date.now()>=deadline)throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+    }
+  }
 }
 
 /**
