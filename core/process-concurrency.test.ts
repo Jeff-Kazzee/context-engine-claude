@@ -266,3 +266,29 @@ test('[CORE-024] first-ever concurrent calls on a fresh session all succeed', { 
   }
 });
 
+
+test('[CORE-005] a model write racing materialization is committed or logged, never lost', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const sig = tempDir('race-sig');
+  assert.equal((await startCli(f, ['record', ...opening], { input: event('BASE') }).done).code, 0);
+  const l = layout(f.projectRoot, 'S1', f.stateDir);
+  const racing = startCli(f, ['record', ...opening], {
+    input: event('APPEND_SENTINEL'),
+    fault: { call: 'openSync', path: '/context\\.md\\.ce-\\d+-[0-9a-f]{8}\\.tmp$', at: 'before', action: 'block', dir: sig },
+  });
+  try {
+    await waitForFile(join(sig, 'blocked'));
+    writeFileSync(l.workingContext, `${readFileSync(l.workingContext, 'utf8')}\n[[CTX_TURN 2 role=notes]]\nRACE_SENTINEL\n`);
+    writeFileSync(join(sig, 'release'), '');
+    const r = await racing.done;
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+
+    const committed = readdirSync(l.revisions).some((n) => readFileSync(join(l.revisions, n), 'utf8').includes('RACE_SENTINEL'));
+    const logged = eventLog(l.events).some((row) => row.type === 'restored' && String(row.rejected).includes('RACE_SENTINEL'));
+    const receipt = JSON.parse(r.stdout).receipt;
+    assert.ok(committed || (logged && receipt?.kind === 'restored'), `RACE_SENTINEL was ${committed ? 'committed' : logged ? 'logged without a receipt' : 'lost: in no revision and no Event Log row'}`);
+    assert.equal(count(readFileSync(l.workingContext, 'utf8'), 'APPEND_SENTINEL'), 1, 'the runner append is kept too');
+  } finally {
+    await stopGroup(racing.child);
+  }
+});
