@@ -176,6 +176,8 @@ function privateWorkingContextFile(path: string): void {
   } finally { closeSync(fd); }
 }
 
+const MANAGED_IGNORE = '# Context Engine Working Contexts are never committed.\n*\n';
+
 /** Creates the private state directories (mode 0700) and the Working Context directory. */
 export function ensureDirs(l: Layout, stateRoot: string): void {
   requireSupportedPlatform();
@@ -193,7 +195,7 @@ export function ensureDirs(l: Layout, stateRoot: string): void {
   try {
     // O_EXCL does not follow even a dangling symlink at this name.
     const file = openSync(ignore, 'exclusive-nofollow');
-    try { writeFileSync(file, '# Context Engine Working Contexts are never committed.\n*\n'); fsyncSync(file); }
+    try { writeFileSync(file, MANAGED_IGNORE); fsyncSync(file); }
     finally { closeSync(file); }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
@@ -202,6 +204,14 @@ export function ensureDirs(l: Layout, stateRoot: string): void {
     for (const deadline = Date.now() + 2_000; Buffer.isBuffer(existing) && existing.length === 0 && Date.now() < deadline;) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
       existing = readWorkingContextFile(join(managed, '.gitignore'), 65536);
+    }
+    // Still empty: its creator died before writing it. Only that exact state is repaired. Two
+    // repairers publish the same bytes.
+    const found = Buffer.isBuffer(existing) && existing.length === 0 ? lstatSync(ignore) : undefined;
+    if (found?.isFile() && found.nlink === 1 && found.size === 0 && found.owner === 'current') {
+      const tmp = writeTemp(ignore, MANAGED_IGNORE, 'ignore-tmp');
+      try { renameSync(tmp, ignore); } finally { try { unlinkSync(tmp); } catch {} }
+      existing = Buffer.from(MANAGED_IGNORE);
     }
     if (!Buffer.isBuffer(existing)) throw new Error('.context-engine/.gitignore must be a regular, unlinked file');
     const rules = existing.toString('utf8').split(/\r?\n/).map(v => v.trim()).filter(v => v && !v.startsWith('#'));
