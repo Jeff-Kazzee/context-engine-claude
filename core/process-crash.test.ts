@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { openSession } from './index.ts';
 import type { FaultPlan } from './process-faults.ts';
@@ -175,6 +175,36 @@ test('[CORE-005] a recovery killed after keeping a stale edit keeps it once on r
     assert.equal(retried.code, 0, retried.stdout + retried.stderr);
     assert.equal(kept(), 1, 'the retried recovery does not keep the same edit twice');
     assert.equal(JSON.parse(retried.stdout).receipt?.kind, 'restored', 'the retry still reports the restore');
+    assert.equal(count(assertRecovered(f).text, 'SENTINEL'), 1);
+  } finally {
+    await stopGroup(owner);
+  }
+});
+
+test('[CORE-005] a file renamed over the Working Context while a stale edit is logged is kept too', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const owner = ownerProcess();
+  const sig = tempDir('relook-sig');
+  try {
+    const own = [...opening, '--owner-pid', String(owner.pid)];
+    assert.equal((await startCli(f, ['record', ...own], { input: event('BASE') }).done).code, 0);
+    const halted = await startCli(f, ['record', ...own], { input: event('SENTINEL'), fault: { call: 'renameSync', path: '/HEAD$', at: 'after', action: 'kill' } }).done;
+    assert.equal(halted.signal, 'SIGKILL', halted.stderr);
+    const l = layout(f.projectRoot, 'S1', f.stateDir);
+    const base = readFileSync(l.workingContext, 'utf8');
+    writeFileSync(l.workingContext, `${base}\n[[CTX_TURN 2 role=notes]]\nFIRST_STALE\n`);
+
+    const recovering = startCli(f, ['sync', ...own], { fault: { call: 'fsyncSync', path: '/events\\.jsonl$', contains: '"type":"restored"', at: 'after', action: 'block', dir: sig } });
+    await waitForFile(join(sig, 'blocked'));
+    const replacement = join(dirname(l.workingContext), 'editor-save');
+    writeFileSync(replacement, `${base}\n[[CTX_TURN 2 role=notes]]\nRENAMED_IN\n`);
+    renameSync(replacement, l.workingContext);
+    writeFileSync(join(sig, 'release'), '');
+    const r = await recovering.done;
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const rejected = eventLog(l.events).filter((row) => row.type === 'restored').map((row) => String(row.rejected));
+    assert.equal(rejected.filter((t) => t.includes('FIRST_STALE')).length, 1);
+    assert.equal(rejected.filter((t) => t.includes('RENAMED_IN')).length, 1, 'the check after the append saw the renamed file');
     assert.equal(count(assertRecovered(f).text, 'SENTINEL'), 1);
   } finally {
     await stopGroup(owner);
