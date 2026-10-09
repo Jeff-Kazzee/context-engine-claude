@@ -471,7 +471,8 @@ function writeTemp(path: FileTarget, data: string, point: CrashPoint): FileTarge
   return tmp;
 }
 
-export function atomicWrite(path: string, data: string, point: CrashPoint): void {
+/** `beforeRename` runs after the new bytes are flushed, just before they replace the file. */
+export function atomicWrite(path: string, data: string, point: CrashPoint, beforeRename?: () => void): void {
   if (point !== 'wc-tmp') {
     const parent = dirname(resolve(path));
     const fd = openPrivateDirectory(parent)!;
@@ -479,6 +480,7 @@ export function atomicWrite(path: string, data: string, point: CrashPoint): void
     try {
       const target=childTarget(anchor(fd),basename(path));
       tmp=writeTemp(target,data,point);
+      beforeRename?.();
       renameSync(tmp,target);
       fsyncSync(fd);
     } finally { if(tmp)try{unlinkSync(tmp);}catch{} closeSync(fd); }
@@ -494,6 +496,7 @@ export function atomicWrite(path: string, data: string, point: CrashPoint): void
     if (!fstatSync(fd).isDirectory() || openedPath(fd) !== parent) throw new Error('Working Context parent could not be verified; refusing to write');
     const target = childTarget(anchor(fd), basename(path));
     tmp = writeTemp(target, data, point);
+    beforeRename?.();
     renameSync(tmp, target);
     fsyncSync(fd);
   } finally {
