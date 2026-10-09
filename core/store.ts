@@ -491,7 +491,7 @@ export function replaceWorkingContext(wc: string, data: string, maxBytes: number
   try {
     atomicWrite(wc, data, 'wc-tmp', () => {
       for (let look = 0; look < 4; look++) {
-        if (last.fd !== undefined) closeSync(last.fd);
+        if (last.fd !== undefined) { closeSync(last.fd); last.fd = undefined; }
         const opened = openWorkingContext(wc);
         last.fd = typeof opened === 'number' ? opened : undefined;
         last.read = last.fd === undefined ? opened as undefined | 'not-a-file' : readOpened(last.fd, maxBytes);
