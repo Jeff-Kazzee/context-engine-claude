@@ -46,3 +46,37 @@ test('[LIFE-015] SIGKILL during Claude install never becomes a silent baseline',
   assert.deepEqual(tracked.map(read), preKill, `uninstall returns the pre-kill bytes. It said:\n${removed.stdout}`);
   assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
 });
+
+test('[LIFE-015] kill inside a guarded replacement never hides the live config', () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, SETTINGS);
+  assert.equal(w.ce(['install']).status, 0);
+
+  // A child uninstall is killed by its own fs.linkSync after settings.json was moved to its candidate name.
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const { uninstallLocked } = await import(${JSON.stringify(new URL('./install.ts', import.meta.url).href)});
+    const { claudeSpec, setupContext } = await import(${JSON.stringify(new URL('./runners.ts', import.meta.url).href)});
+    const native = fs.linkSync;
+    fs.linkSync = (from, to) => {
+      if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL');
+      return native(from, to);
+    };
+    syncBuiltinESMExports();
+    const ctx = setupContext(process.env);
+    uninstallLocked(ctx, claudeSpec(ctx));
+  `], { env: { ...process.env, ...w.env }, encoding: 'utf8' });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  const candidates = readdirSync(w.claudeHome).filter((name) => name.startsWith('.context-engine-replace-'));
+  assert.equal(candidates.length, 1, 'the kill left one replacement candidate');
+  assert.equal(existsSync(settings), false, 'the kill left settings.json only under the candidate name');
+  const candidate = join(w.claudeHome, candidates[0]!);
+  const preRevert = readFileSync(candidate, 'utf8');
+
+  const next = w.ce(['uninstall']);
+  const now = read(settings);
+  if (now !== null && [SETTINGS, preRevert].includes(now)) return;
+  assert.ok(`${next.stdout}${next.stderr}`.includes(candidate), `the next run names the candidate. It said:\n${next.stdout}${next.stderr}\nsettings.json is now ${JSON.stringify(now)}`);
+});
