@@ -321,6 +321,30 @@ test('[CORE-005] an edit racing an append after a committed model edit gets a re
   }
 });
 
+test('[CORE-005] an in-place write after the last check and before the rename is kept', { timeout: 30_000 }, async () => {
+  const f = fixture();
+  const sig = tempDir('gap-sig');
+  assert.equal((await startCli(f, ['record', ...opening], { input: event('BASE') }).done).code, 0);
+  const l = layout(f.projectRoot, 'S1', f.stateDir);
+  const racing = startCli(f, ['record', ...opening], {
+    input: event('APPEND_SENTINEL'),
+    fault: { call: 'renameSync', path: '/context\\.md$', at: 'before', action: 'block', dir: sig },
+  });
+  try {
+    await waitForFile(join(sig, 'blocked'));
+    writeFileSync(l.workingContext, `${readFileSync(l.workingContext, 'utf8')}\n[[CTX_TURN 2 role=notes]]\nGAP_EDIT\n`);
+    writeFileSync(join(sig, 'release'), '');
+    const r = await racing.done;
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const kept = eventLog(l.events).filter((row) => row.type === 'restored' && String(row.rejected).includes('GAP_EDIT'));
+    assert.equal(kept.length, 1, 'GAP_EDIT is kept in the Event Log once');
+    assert.equal(JSON.parse(r.stdout).receipt?.kind, 'restored');
+    assert.equal(count(readFileSync(l.workingContext, 'utf8'), 'APPEND_SENTINEL'), 1);
+  } finally {
+    await stopGroup(racing.child);
+  }
+});
+
 // Writes <sig>/<name>-ready, then calls sessionFrameKey on each directory as soon as <sig>/go-<i>
 // exists, and writes what it got.
 const FRAME_KEY_RACER = `
