@@ -519,7 +519,9 @@ class Core {
     if (current === null || !current.trim() || [head.parent, head.sha].includes(sha(current))) return;
     appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', rejected: current });
     const receipt: Receipt = { kind: 'restored', revision: head.rev, reason: 'unmaterialized-append', chars, approxTokens: approxTokens(chars), text: `Context Engine: revision ${head.rev} was restored because committed runner events had not yet reached the Working Context. The intervening edit is kept in the Event Log; read the restored file before editing it again. ${sizeReadout(chars)}` };
-    this.retainReceipt({ revision: head.rev, chars, workingContextText: '', turns: [], receipt });
+    // The restore describes the newest revision, so it leads. Earlier notices keep their text first.
+    const pending = this.pendingReceipt;
+    this.pendingReceipt = pending ? { ...receipt, text: `${pending.text}\n${receipt.text}` } : receipt;
   }
 
   private writeWorkingContext(text: string): void {
