@@ -2,14 +2,26 @@
 // touches the real home directory or XDG state.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FaultPlan } from './process-faults.ts';
 
+const made: string[] = [];
+
+// Each test file runs in its own process. Every directory it made goes when that process exits.
+process.on('exit', () => {
+  for (const dir of made) {
+    try { rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { process.stderr.write(`could not remove test directory ${dir}: ${(e as Error).message}\n`); }
+  }
+});
+
 export function tempDir(label: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), `ce-${label}-`)));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `ce-${label}-`)));
+  made.push(dir);
+  return dir;
 }
 
 export function fixture() {
