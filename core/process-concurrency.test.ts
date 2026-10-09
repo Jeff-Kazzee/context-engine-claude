@@ -239,3 +239,30 @@ test('[CORE-026] a live foreign owner of S1 does not block a second owner of S2'
     await stopGroup(holder);
   }
 });
+
+test('[CORE-024] first-ever concurrent calls on a fresh session all succeed', { timeout: 60_000 }, async () => {
+  const f = fixture();
+  const owner = ownerProcess();
+  const sig = tempDir('gitignore-sig');
+  const args = ['record', ...opening, '--owner-pid', String(owner.pid)];
+  const runs = [startCli(f, args, { input: event('FRESH_0'), fault: { call: 'writeFileSync', path: '/\\.context-engine/\\.gitignore$', at: 'before', action: 'block', dir: sig } })];
+  try {
+    await waitForFile(join(sig, 'blocked'));
+    for (let i = 1; i < 8; i++) runs.push(startCli(f, args, { input: event(`FRESH_${i}`) }));
+    await new Promise((r) => setTimeout(r, 750));
+    writeFileSync(join(sig, 'release'), '');
+    const results = await Promise.all(runs.map((r) => r.done));
+    results.forEach((r, i) => assert.equal(r.code, 0, `call ${i}: ${r.stdout}${r.stderr}`));
+
+    const ignore = readFileSync(join(f.projectRoot, '.context-engine', '.gitignore'), 'utf8');
+    assert.equal(ignore.trim().split('\n').at(-1), '*');
+    const l = layout(f.projectRoot, 'S1', f.stateDir);
+    const text = readFileSync(l.workingContext, 'utf8');
+    for (let i = 0; i < 8; i++) assert.equal(count(text, `FRESH_${i}\n`), 1, `FRESH_${i} recorded once`);
+    assert.equal(JSON.parse(readFileSync(l.head, 'utf8')).rev, 8);
+  } finally {
+    for (const r of runs) await stopGroup(r.child);
+    await stopGroup(owner);
+  }
+});
+
