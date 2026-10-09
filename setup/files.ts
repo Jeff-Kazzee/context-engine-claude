@@ -135,8 +135,9 @@ export function safeWrite(path: string, data: string | Buffer, expected?: Buffer
     fsyncSync(fd);
   } catch(error) {
     if(candidate&&moved) {
+      const kept=join(parent,targetBasename(candidate));
       try {linkSync(candidate,childTarget(anchor(fd),basename(path)));unlinkSync(candidate);candidate=undefined;moved=false;fsyncSync(fd);}
-      catch {throw new Error(`setup replacement refused; a newer destination was retained and the captured candidate remains at ${candidate}`,{cause:error});}
+      catch {throw new Error(`setup replacement refused; a newer destination was retained and the captured candidate remains at ${kept}`,{cause:error});}
     }
     throw error;
   } finally {
