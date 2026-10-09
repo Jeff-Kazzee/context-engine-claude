@@ -518,18 +518,28 @@ class Core {
 
   /** Keeps one stale edit. True when it appended a row, which gave other edits time to land. */
   private keepStaleEdit(head: Head, chars: number, read: WorkingContextRead, kept: Set<string>): boolean {
+    if (read === undefined) return false;
     const current = Buffer.isBuffer(read) ? decode(read) : null;
-    if (current === null || !current.trim() || [head.parent, head.sha].includes(sha(current)) || kept.has(current)) return false;
-    kept.add(current);
+    if (current !== null && (!current.trim() || [head.parent, head.sha].includes(sha(current)))) return false;
+    // Logged as sync() logs an unusable file: the text, the raw bytes, or nothing when it was not read.
+    const rejected: Record<string, unknown> = current !== null ? { rejected: current }
+      : Buffer.isBuffer(read) ? { rejectedBase64: read.toString('base64') }
+      : { rejected: null, ...(read === 'too-large' ? { oversized: true } : {}) };
+    const key = JSON.stringify(rejected);
+    if (kept.has(key)) return false;
+    kept.add(key);
     // A retry after a crash between this append and the rename finds the edit already kept.
     let last: Record<string, unknown> | undefined;
     for (const entry of readLog(this.l.events)) if (entry.type === 'restored' && entry.rev === head.rev) last = entry;
-    const appended = last?.rejected !== current;
+    const appended = !last || ['rejected', 'rejectedBase64', 'oversized'].some((k) => last[k] !== rejected[k]);
     if (appended) {
-      try { appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', rejected: current }); }
+      try { appendLog(this.l.events, { type: 'restored', rev: head.rev, reason: 'unmaterialized-append', ...rejected }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'CE_LOG_APPEND_AMBIGUOUS') this.appendUncertain = true; throw error; }
     }
-    const receipt: Receipt = { kind: 'restored', revision: head.rev, reason: 'unmaterialized-append', chars, approxTokens: approxTokens(chars), text: `Context Engine: revision ${head.rev} was restored because committed runner events had not yet reached the Working Context. The intervening edit is kept in the Event Log; read the restored file before editing it again. ${sizeReadout(chars)}` };
+    const what = Buffer.isBuffer(read)
+      ? 'The intervening edit is kept in the Event Log; read the restored file before editing it again.'
+      : 'The intervening file was oversized or linked, so its bytes were not read or copied, and its rejection is recorded in the Event Log. Read the restored file before editing it again.';
+    const receipt: Receipt = { kind: 'restored', revision: head.rev, reason: 'unmaterialized-append', chars, approxTokens: approxTokens(chars), text: `Context Engine: revision ${head.rev} was restored because committed runner events had not yet reached the Working Context. ${what} ${sizeReadout(chars)}` };
     // The restore describes the newest revision, so it leads. Earlier notices keep their text first.
     // One notice covers every edit kept for the same revision.
     const pending = this.pendingReceipt;
