@@ -345,6 +345,33 @@ test('[CORE-005] an in-place write after the last check and before the rename is
   }
 });
 
+const unreadableEdits: Array<[string, Buffer, Record<string, unknown>]> = [
+  ['not UTF-8', Buffer.from([0x5b, 0xff, 0xfe, 0x0a]), { rejectedBase64: Buffer.from([0x5b, 0xff, 0xfe, 0x0a]).toString('base64') }],
+  ['over the read bound', Buffer.alloc(50_000, 0x61), { rejected: null, oversized: true }],
+];
+for (const [label, bytes, row] of unreadableEdits) {
+  test(`[CORE-005] a racing edit that is ${label} still leaves a restored row`, { timeout: 30_000 }, async () => {
+    const f = fixture();
+    const sig = tempDir('unreadable-sig');
+    assert.equal((await startCli(f, ['record', ...opening], { input: event('BASE') }).done).code, 0);
+    const l = layout(f.projectRoot, 'S1', f.stateDir);
+    const racing = startCli(f, ['record', ...opening], { input: event('APPEND_SENTINEL'), fault: { call: 'openSync', path: WC_TEMP, at: 'before', action: 'block', dir: sig } });
+    try {
+      await waitForFile(join(sig, 'blocked'));
+      writeFileSync(l.workingContext, bytes);
+      writeFileSync(join(sig, 'release'), '');
+      const r = await racing.done;
+      assert.equal(r.code, 0, r.stdout + r.stderr);
+      const restored = eventLog(l.events).filter((entry) => entry.type === 'restored');
+      assert.equal(restored.length, 1);
+      for (const [key, value] of Object.entries(row)) assert.deepEqual(restored[0]![key], value, key);
+      assert.equal(JSON.parse(r.stdout).receipt?.kind, 'restored');
+    } finally {
+      await stopGroup(racing.child);
+    }
+  });
+}
+
 // Writes <sig>/<name>-ready, then calls sessionFrameKey on each directory as soon as <sig>/go-<i>
 // exists, and writes what it got.
 const FRAME_KEY_RACER = `
