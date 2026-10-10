@@ -241,3 +241,23 @@ test('wave31: an operation index that covers more than a shortened Event Log is 
   recordOnce(options,'AFTER_LOSS','00000000-0000-4000-8000-000000001003');
   assert.equal(rowsWith(p.events,'AFTER_LOSS'),1);
 });
+
+test('wave31: an operation index bound to a replaced Event Log is rebuilt',()=>{
+  const options={...fixture(),sessionId:'W31-INODE',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
+  recordOnce(options,'WARM_ZERO','00000000-0000-4000-8000-000000002000');
+  recordOnce(options,'BASE_ONE','00000000-0000-4000-8000-000000002001');
+  // An unidentified row, then an identified one, so the index covers the unidentified row.
+  const text='UNSEEN_ROW '+'u'.repeat(200);
+  recordOnce(options,text+'v'.repeat(131));
+  recordOnce(options,'BASE_THREE','00000000-0000-4000-8000-000000002003');
+  // The replacement log carries an identified row of the same length where the unidentified row was.
+  const operationId='00000000-0000-4000-8000-000000002002',lines=fs.readFileSync(p.events,'utf8').split('\n');
+  const index=lines.findIndex(line=>line.includes('UNSEEN_ROW')),row=JSON.parse(lines[index]!),event={role:'tool',text};
+  const replacement=JSON.stringify({type:row.type,events:[{seq:row.events[0].seq,event}],operation:{id:operationId,sha:sha(JSON.stringify([event]))},at:row.at});
+  assert.equal(replacement.length,lines[index]!.length);
+  lines[index]=replacement;
+  const copy=p.events+'.replacement';
+  fs.writeFileSync(copy,lines.join('\n'),{mode:0o600});fs.renameSync(copy,p.events);
+  recordOnce(options,text,operationId);
+  assert.equal(rowsWith(p.events,operationId),1);
+});
