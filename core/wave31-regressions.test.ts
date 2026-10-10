@@ -12,6 +12,21 @@ import {appendLog,layout,sha} from './store.ts';
 import {retainRunnerEvent} from './event-safety.ts';
 import {acquireLock,holderFor,releaseLock} from './lock.ts';
 
+/** The test's view of the operation index: a head and shards chosen by a digest of the ID. */
+const indexShards=(state:string)=>fs.readdirSync(state).filter(name=>/^operations-[0-9a-f]{2}\.jsonl$/.test(name)).sort();
+/** The committed index lines. Bytes past a shard's committed length are not part of the index. */
+const indexedText=(state:string)=>Object.entries(JSON.parse(fs.readFileSync(join(state,'operations.json'),'utf8')).shards as Record<string,{bytes:number}>)
+  .map(([name,shard])=>fs.readFileSync(join(state,name)).subarray(0,shard.bytes).toString('utf8')).join('');
+const shardName=(id:string)=>`operations-${(parseInt(sha(id).slice(0,2),16)>>2).toString(16).padStart(2,'0')}.jsonl`;
+/** Appends a line to an ID's shard and commits it in the head, as the index itself would. */
+function commitIndexLine(state:string,id:string,line:string,through:number){
+  const headPath=join(state,'operations.json'),head=JSON.parse(fs.readFileSync(headPath,'utf8')),name=shardName(id),shard=join(state,name);
+  const bytes=head.shards[name]?.bytes??0,committed=fs.existsSync(shard)?fs.readFileSync(shard).subarray(0,bytes):Buffer.alloc(0);
+  fs.writeFileSync(shard,Buffer.concat([committed,Buffer.from(line)]),{mode:0o600});
+  head.shards[name]={bytes:bytes+Buffer.byteLength(line)};head.through=through;
+  fs.writeFileSync(headPath,JSON.stringify(head),{mode:0o600});
+}
+
 test('wave31: close releases ownership when receipt confirmation fails', () => {
   const f = fixture(), options = {...f, sessionId:'W31', runner:'test', hardLimit:10000};
   const initial = openSession(options); assert.equal(initial.status,'open');
@@ -99,18 +114,19 @@ for(const reopen of [false,true])test('wave31: an operation logged before a cras
   const first=openSession(options);assert.equal(first.status,'open');
   first.session.record([{role:'user',text:'BEFORE_ONE'}],{operationId:'00000000-0000-4000-8000-000000000401'});
   first.session.record([{role:'user',text:'BEFORE_TWO'}],{operationId:'00000000-0000-4000-8000-000000000402'});
-  const index=join(first.session.stateDir,'operations.jsonl'),inode=fs.statSync(index).ino;
+  const state=first.session.stateDir,inodes=new Map(indexShards(state).map(name=>[name,fs.statSync(join(state,name)).ino]));
   const events=[{role:'user',text:'CRASHED_BEFORE_INDEX'}],operationId='00000000-0000-4000-8000-000000000403';
   armCrash('after-log');assert.throws(()=>first.session.record(events,{operationId}),/injected crash/);
-  assert.equal(fs.readFileSync(index,'utf8').includes(operationId),false);
+  assert.equal(indexedText(state).includes(operationId),false);
   let session=first.session;
   if(reopen){session.close();const next=openSession(options);assert.equal(next.status,'open');session=next.session;}
   assert.equal(session.record(events,{operationId}).workingContextText.match(/CRASHED_BEFORE_INDEX/g)?.length,1);
   const log=fs.readFileSync(join(session.stateDir,'events.jsonl'),'utf8');
   assert.equal(log.split('\n').filter(line=>line.includes(operationId)).length,1);
   // The tail scan extends the existing index instead of rebuilding it.
-  assert.equal(fs.statSync(index).ino,inode);
-  assert.equal(fs.readFileSync(index,'utf8').includes(operationId),true);
+  assert.ok(inodes.size>0);
+  for(const [name,inode] of inodes)assert.equal(fs.statSync(join(state,name)).ino,inode);
+  assert.equal(indexedText(state).includes(operationId),true);
   session.close();
 });
 
@@ -120,16 +136,15 @@ for(const damage of ['missing','torn','malformed','mismatched','ahead'] as const
   const first=openSession(options);assert.equal(first.status,'open');
   first.session.record([{role:'user',text:'EARLIER_INPUT'}],{operationId:earlier});
   first.session.record([event],{operationId});
-  const index=join(first.session.stateDir,'operations.jsonl');first.session.close();
-  const lines=fs.readFileSync(index,'utf8').trim().split('\n').map(line=>JSON.parse(line));
-  if(damage==='missing')fs.rmSync(index);
-  else if(damage==='torn')fs.appendFileSync(index,'{"id":"'+operationId);
-  else if(damage==='malformed')fs.appendFileSync(index,'{"through":\n');
-  else if(damage==='ahead')fs.appendFileSync(index,JSON.stringify({through:Number.MAX_SAFE_INTEGER})+'\n');
+  const state=first.session.stateDir,headPath=join(state,'operations.json');first.session.close();
+  if(damage==='missing')fs.rmSync(headPath);
+  else if(damage==='torn')for(const name of indexShards(state))fs.appendFileSync(join(state,name),'{"id":"'+operationId);
+  else if(damage==='malformed')fs.writeFileSync(headPath,'{"through":');
+  else if(damage==='ahead')fs.writeFileSync(headPath,JSON.stringify({...JSON.parse(fs.readFileSync(headPath,'utf8')),through:Number.MAX_SAFE_INTEGER}));
   else {
-    // Give the entry another row's digest. The check against its own row must reject it.
-    const own=lines.find(line=>line.id===operationId),other=lines.find(line=>line.id===earlier);
-    own.sha=other.sha;fs.writeFileSync(index,lines.map(line=>JSON.stringify(line)).join('\n')+'\n');
+    // Give the entry another row's digest at the same length. The check against its own row must reject it.
+    const digest=(id:string)=>JSON.parse(indexedText(state).split('\n').find(line=>line.includes(id))!).sha,shard=join(state,shardName(operationId));
+    fs.writeFileSync(shard,fs.readFileSync(shard,'utf8').replace(digest(operationId),digest(earlier)));
   }
   const next=openSession(options);assert.equal(next.status,'open');
   next.session.record([event],{operationId});
@@ -137,7 +152,8 @@ for(const damage of ['missing','torn','malformed','mismatched','ahead'] as const
   assert.throws(()=>next.session.record([{role:'user',text:'CHANGED_INPUT'}],{operationId}),/operation.*different/i);
   next.session.record([{role:'user',text:'AFTER_REPAIR'}],{operationId:'00000000-0000-4000-8000-000000000503'});
   next.session.close();
-  for(const line of fs.readFileSync(index,'utf8').trim().split('\n'))JSON.parse(line);
+  JSON.parse(fs.readFileSync(headPath,'utf8'));
+  for(const line of indexedText(state).trim().split('\n'))JSON.parse(line);
 });
 
 for(const staleEntry of [false,true])test('wave31: a torn identified row is never claimed, staleEntry='+staleEntry,()=>{
@@ -145,14 +161,14 @@ for(const staleEntry of [false,true])test('wave31: a torn identified row is neve
   const first=openSession(options);assert.equal(first.status,'open');
   first.session.record([{role:'user',text:'BEFORE_TORN_ONE'}],{operationId:'00000000-0000-4000-8000-000000000601'});
   first.session.record([{role:'user',text:'BEFORE_TORN_TWO'}],{operationId:'00000000-0000-4000-8000-000000000602'});
-  const log=join(first.session.stateDir,'events.jsonl'),index=join(first.session.stateDir,'operations.jsonl');
+  const state=first.session.stateDir,log=join(state,'events.jsonl');
   const events=[{role:'user',text:'TORN_ONCE'}],operationId='00000000-0000-4000-8000-000000000603';
   armCrash('log-torn');assert.throws(()=>first.session.record(events,{operationId}),/injected crash/);
-  assert.equal(fs.readFileSync(index,'utf8').includes(operationId),false);
+  assert.equal(indexedText(state).includes(operationId),false);
   if(staleEntry){
-    // The worst case after storage loss: an index entry that names the torn bytes as a durable row.
+    // The worst case after storage loss: a committed index entry that names the torn bytes as a durable row.
     const bytes=fs.readFileSync(log),start=bytes.lastIndexOf(0x0a)+1;
-    fs.appendFileSync(index,JSON.stringify({id:operationId,sha:sha(JSON.stringify(events.map(retainRunnerEvent))),start,end:bytes.length,through:bytes.length})+'\n');
+    commitIndexLine(state,operationId,JSON.stringify({id:operationId,sha:sha(JSON.stringify(events.map(retainRunnerEvent))),start,end:bytes.length})+'\n',bytes.length);
   }
   first.session.close();
   const next=openSession(options);assert.equal(next.status,'open');
@@ -167,7 +183,7 @@ test('wave31: an ambiguous identified append enters the index only after reopen'
   const first=openSession(options);assert.equal(first.status,'open');
   first.session.record([{role:'user',text:'BEFORE_AMBIGUOUS_ONE'}],{operationId:'00000000-0000-4000-8000-000000000701'});
   first.session.record([{role:'user',text:'BEFORE_AMBIGUOUS_TWO'}],{operationId:'00000000-0000-4000-8000-000000000702'});
-  const log=join(first.session.stateDir,'events.jsonl'),index=join(first.session.stateDir,'operations.jsonl');
+  const state=first.session.stateDir,log=join(state,'events.jsonl');
   const events=[{role:'user',text:'AMBIGUOUS_ONCE'}],operationId='00000000-0000-4000-8000-000000000703';
   // The whole row is written, then its flush fails, so the append may or may not be durable.
   const native=fs.fsyncSync;let failed=false;
@@ -178,14 +194,14 @@ test('wave31: an ambiguous identified append enters the index only after reopen'
   try{assert.throws(()=>first.session.record(events,{operationId}),/fixture log flush failure/);}
   finally{fs.fsyncSync=native;syncBuiltinESMExports();}
   assert.equal(failed,true);
-  assert.equal(fs.readFileSync(index,'utf8').includes(operationId),false);
+  assert.equal(indexedText(state).includes(operationId),false);
   assert.throws(()=>first.session.record(events,{operationId}),/close and reopen/);
   first.session.close();
   const next=openSession(options);assert.equal(next.status,'open');
   next.session.record(events,{operationId});
   assert.equal(next.session.sync().workingContextText.match(/AMBIGUOUS_ONCE/g)?.length,1);
   assert.equal(fs.readFileSync(log,'utf8').split('\n').filter(line=>line.includes(operationId)).length,1);
-  assert.equal(fs.readFileSync(index,'utf8').includes(operationId),true);
+  assert.equal(indexedText(state).includes(operationId),true);
   next.session.close();
 });
 
