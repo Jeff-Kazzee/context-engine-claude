@@ -300,3 +300,21 @@ test('wave31: index files above their size bound are never loaded',()=>{
   assert.equal(rowsWith(p.events,'BOUND_TWO'),1);
   assert.equal(rowsWith(p.events,'BOUND_THREE'),1);
 });
+
+for(const damage of ['omitted','replaced'] as const)test('wave31: an index shard with one '+damage+' entry is never trusted for a miss',()=>{
+  const options={...fixture(),sessionId:'W31-COMPLETE',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
+  const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+  // Three IDs in one shard, so the damaged entry sits between two others.
+  const name=shardName(id(5000)),ids=[id(5000)];
+  for(let n=5001;ids.length<3;n++)if(shardName(id(n))===name)ids.push(id(n));
+  for(const [i,operationId] of ids.entries())recordOnce(options,`COMPLETE_${i}`,operationId);
+  const target=ids[1]!,shard=join(p.stateDir,name),headPath=join(p.stateDir,'operations.json');
+  const text=fs.readFileSync(shard,'utf8'),line=text.split('\n').find(entry=>entry.includes(target))!+'\n';
+  if(damage==='omitted'){
+    // The shard and its committed length look as if the entry had never been written.
+    const head=JSON.parse(fs.readFileSync(headPath,'utf8'));head.shards[name].bytes-=line.length;
+    fs.writeFileSync(shard,text.replace(line,''));fs.writeFileSync(headPath,JSON.stringify(head));
+  } else fs.writeFileSync(shard,text.replace(target,id(9999)));
+  recordOnce(options,'COMPLETE_1',target);
+  assert.equal(rowsWith(p.events,'COMPLETE_1'),1);
+});
