@@ -209,22 +209,44 @@ test('[LIFE-015] a kill after a guarded replacement is published names both left
   assert.doesNotMatch(next.stderr, /unverified or linked file/, `the leftovers explain the refusal, not the link count:\n${next.stderr}`);
 });
 
-/** Runs uninstallLocked in a child process that the given fs patch kills. */
-function killedUninstall(w: World, patch: string): void {
+/** Runs one setup step in a child process that the given fs patch kills. */
+function killedStep(w: World, step: 'installLocked' | 'uninstallLocked', patch: string): void {
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import fs from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
-    const { uninstallLocked } = await import(${JSON.stringify(new URL('./install.ts', import.meta.url).href)});
+    const setup = await import(${JSON.stringify(new URL('./install.ts', import.meta.url).href)});
     const { claudeSpec, setupContext } = await import(${JSON.stringify(new URL('./runners.ts', import.meta.url).href)});
     ${patch}
     syncBuiltinESMExports();
     const ctx = setupContext(process.env);
-    uninstallLocked(ctx, claudeSpec(ctx));
+    setup[${JSON.stringify(step)}](ctx, claudeSpec(ctx));
   `], { env: { ...process.env, ...w.env }, encoding: 'utf8' });
   assert.equal(child.signal, 'SIGKILL', child.stderr);
 }
 const leftovers = (dir: string) => readdirSync(dir).filter((name) => name.startsWith('.context-engine-')).map((name) => join(dir, name));
 
+
+test('[LIFE-015] a kill after the install record is published leaves a working install', () => {
+  for (const first of ['enable', 'install']) {
+    const w = world();
+    const tracked = join(w.claudeHome, 'settings.json');
+    writeFileSync(tracked, SETTINGS);
+    // The child install is killed as it removes its interrupted install record, after it published the install record.
+    killedStep(w, 'installLocked', `const native = fs.unlinkSync; fs.unlinkSync = (p) => { if (String(p).endsWith('/claude.pending.json')) process.kill(process.pid, 'SIGKILL'); return native(p); };`);
+    const pointer = join(w.stateDir, 'setup', 'claude.json'), pending = join(w.stateDir, 'setup', 'claude.pending.json');
+    assert.equal(JSON.parse(readFileSync(pending, 'utf8')).dir, JSON.parse(readFileSync(pointer, 'utf8')).dir, 'both records name the finished install');
+
+    const status = w.ce(['status']);
+    assert.equal(status.status, 0, `status reports the finished install:\n${status.stderr}`);
+    assert.ok(status.stdout.includes('install record present'), status.stdout);
+    const r = w.ce([first]);
+    if (first === 'enable') assert.equal(r.status, 0, r.stderr);
+    else assert.match(r.stderr, /already installed/);
+    assert.equal(existsSync(pending), false, `${first} removed the leftover record of the finished install`);
+    assert.equal(w.ce(['uninstall']).status, 0);
+    assert.equal(readFileSync(tracked, 'utf8'), SETTINGS);
+  }
+});
 test('[LIFE-009] the refusal after a killed write gives the step that recovers each leftover', async () => {
   // Published: settings.json already holds the restored bytes, so both leftovers go.
   {
@@ -232,7 +254,7 @@ test('[LIFE-009] the refusal after a killed write gives the step that recovers e
     const settings = join(w.claudeHome, 'settings.json');
     writeFileSync(settings, SETTINGS);
     assert.equal(w.ce(['install']).status, 0);
-    killedUninstall(w, `const native = fs.linkSync; fs.linkSync = (from, to) => { native(from, to); if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); };`);
+    killedStep(w, 'uninstallLocked', `const native = fs.linkSync; fs.linkSync = (from, to) => { native(from, to); if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); };`);
     const next = w.ce(['uninstall']);
     for (const path of leftovers(w.claudeHome)) {
       assert.ok(next.stderr.includes(`Remove ${path}.`), `the refusal says to remove ${path}:\n${next.stderr}`);
@@ -248,7 +270,7 @@ test('[LIFE-009] the refusal after a killed write gives the step that recovers e
     const settings = join(w.claudeHome, 'settings.json');
     writeFileSync(settings, SETTINGS);
     assert.equal(w.ce(['install']).status, 0);
-    killedUninstall(w, `const native = fs.linkSync; fs.linkSync = (from, to) => { if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); return native(from, to); };`);
+    killedStep(w, 'uninstallLocked', `const native = fs.linkSync; fs.linkSync = (from, to) => { if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); return native(from, to); };`);
     const next = w.ce(['uninstall']);
     for (const path of leftovers(w.claudeHome)) {
       if (basename(path).startsWith('.context-engine-replace-')) {
@@ -274,7 +296,7 @@ test('[LIFE-009] the refusal after a killed write gives the step that recovers e
     try { await waitForFile(pause); } finally { killGroup(install.pid); }
     assert.equal((await install.done).signal, 'SIGKILL');
     rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
-    killedUninstall(w, `const native = fs.renameSync; fs.renameSync = (from, to) => { native(from, to); if (String(to).includes('.context-engine-delete-')) process.kill(process.pid, 'SIGKILL'); };`);
+    killedStep(w, 'uninstallLocked', `const native = fs.renameSync; fs.renameSync = (from, to) => { native(from, to); if (String(to).includes('.context-engine-delete-')) process.kill(process.pid, 'SIGKILL'); };`);
     assert.equal(existsSync(known), false, 'the kill left known_marketplaces.json only under its candidate');
     const [candidate] = leftovers(join(w.claudeHome, 'plugins'));
     const next = w.ce(['uninstall']);
