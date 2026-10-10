@@ -279,12 +279,12 @@ test('wave31: an operation index bound to a replaced Event Log is rebuilt',()=>{
   assert.equal(rowsWith(p.events,operationId),1);
 });
 
-test('wave31: index files above their size bound are never loaded',()=>{
+for(const inflate of ['every index file','only the shards'] as const)test('wave31: index files above their size bound are never loaded, inflating '+inflate,()=>{
   const options={...fixture(),sessionId:'W31-BOUND',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
   recordOnce(options,'BOUND_ONE','00000000-0000-4000-8000-000000003001');
   recordOnce(options,'BOUND_TWO','00000000-0000-4000-8000-000000003002');
-  // Inflate every index file far past any bound a lookup may load.
-  const files=fs.readdirSync(p.stateDir).filter(name=>name.startsWith('operations')&&!name.includes('.lock'));
+  // Inflate index files far past any bound a lookup may load. Leaving the head intact makes the shard read its own test.
+  const files=fs.readdirSync(p.stateDir).filter(name=>name.startsWith('operations')&&!name.includes('.lock')&&(inflate==='every index file'||/^operations-[0-9a-f]{2}\.jsonl$/.test(name)));
   assert.ok(files.length>0);
   for(const name of files)fs.appendFileSync(join(p.stateDir,name),Buffer.alloc(32*1024*1024,0x78));
   // Count the index bytes read while an exact retry and a new operation are recorded.
