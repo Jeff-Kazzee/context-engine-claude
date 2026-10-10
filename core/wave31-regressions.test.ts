@@ -70,3 +70,23 @@ test('wave31: corrupt durable operation metadata refuses recovery',()=>{
   fs.writeFileSync(log,entries.map(row=>JSON.stringify(row)).join('\n')+'\n');
   assert.throws(()=>openSession(options),/record operation metadata/);
 });
+
+test('wave31: a first-seen operation reads only the Event Log tail', () => {
+  const f=fixture(),options={...f,sessionId:'W31-TAIL',runner:'test',hardLimit:4_000_000};
+  const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+  const first=openSession(options);assert.equal(first.status,'open');
+  for(let i=0;i<8;i++)first.session.record([{role:'tool',text:`BULK_${i} `+'x'.repeat(128*1024)}],{operationId:id(100+i)});
+  const log=join(first.session.stateDir,'events.jsonl');first.session.close();
+  const next=openSession(options);assert.equal(next.status,'open');
+  // Count Event Log bytes read while one new identified operation is recorded.
+  const read=fs.readSync;let logBytes=0;
+  fs.readSync=((fd:number,...args:any[])=>{const n=(read as any)(fd,...args);if(fs.realpathSync(`/proc/self/fd/${fd}`)===log)logBytes+=n;return n;}) as typeof fs.readSync;syncBuiltinESMExports();
+  try{next.session.record([{role:'tool',text:'FRESH_OPERATION'}],{operationId:id(200)});}
+  finally{fs.readSync=read;syncBuiltinESMExports();}
+  const size=fs.statSync(log).size;assert.ok(size>1024*1024);
+  assert.ok(logBytes<64*1024,`read ${logBytes} of ${size} Event Log bytes for a first-seen operation`);
+  next.session.record([{role:'tool',text:'FRESH_OPERATION'}],{operationId:id(200)});
+  assert.equal(next.session.sync().workingContextText.match(/FRESH_OPERATION/g)?.length,1);
+  assert.throws(()=>next.session.record([{role:'tool',text:'CHANGED_INPUT'}],{operationId:id(103)}),/operation.*different/i);
+  next.session.close();
+});
