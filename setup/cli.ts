@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { acquireSetupLock } from './files.ts';
-import { installLocked as install, SetupError, uninstallLocked as uninstall } from './install.ts';
+import { installLocked as install, uninstallLocked as uninstall } from './install.ts';
 import { disableProject, enableProject } from './project.ts';
 import { claudeSpec, type RunnerSpec, setupContext } from './runners.ts';
 import { claudeModeLabel, statusText } from './status.ts';
@@ -59,8 +59,7 @@ export async function runSetup(argv: string[]): Promise<number> {
             out([`${spec.title}: uninstalled.`, ...lines.map((l) => `  ${l}`)]);
           }
         } catch (e) {
-          if (!(e instanceof SetupError)) throw e;
-          process.stderr.write(`${e.message}\n`);
+          process.stderr.write(refusal(e));
           failed = true;
         }
       }
@@ -80,10 +79,18 @@ export async function runSetup(argv: string[]): Promise<number> {
       return 0;
     }
   } catch (e) {
-    if (!(e instanceof SetupError)) throw e;
-    process.stderr.write(`${e.message}\n`);
+    process.stderr.write(refusal(e));
     return 1;
   } finally { release?.(); }
   process.stderr.write(HELP);
   return 1;
+}
+
+/** People read setup refusals, so print the messages that name the paths, never a stack trace. */
+function refusal(e: unknown): string {
+  const text = (v: unknown) => (v instanceof Error ? v.message : String(v));
+  const lines = [text(e)];
+  if (e instanceof AggregateError) lines.push(...e.errors.map((inner) => `  ${text(inner)}`));
+  else if (e instanceof Error && e.cause !== undefined && !lines[0]!.includes(text(e.cause))) lines.push(`  ${text(e.cause)}`);
+  return `${lines.join('\n')}\n`;
 }
