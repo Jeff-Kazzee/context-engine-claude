@@ -3,7 +3,7 @@
 // an absent file: uninstall removes only Context Engine's entries from that file and names the copy.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tempDir } from '../core/testing.ts';
 import { killGroup, startSetup, waitForFile } from './testing/process.ts';
@@ -121,3 +121,19 @@ for (const forge of ['snapshot outside the backups directory', 'tracked file out
     assert.ok(existsSync(pending), `${forge}: the record stays`);
   });
 }
+
+test('[SAFE-011] a hard-linked backup copy refuses uninstall before any runner command or change', () => {
+  const w = world();
+  writeFileSync(join(w.claudeHome, 'settings.json'), '{"theme": "dark"}\n');
+  assert.equal(w.ce(['install']).status, 0);
+  const pointer = join(w.stateDir, 'setup', 'claude.json');
+  const copy = join(snapshotOf(pointer), 'before', '0-settings.json');
+  linkSync(copy, join(tempDir('second-link'), 'copy'));
+  const installed = tree(w.claudeHome);
+
+  const r = w.ce(['uninstall']);
+  assert.notEqual(r.status, 0, `uninstall refuses a linked backup copy. It said:\n${r.stdout}`);
+  assert.ok(r.stderr.includes(copy), `the refusal names ${copy}:\n${r.stderr}`);
+  assert.deepEqual(tree(w.claudeHome), installed, 'no runner command ran and no tracked file changed');
+  assert.ok(existsSync(pointer), 'the install record stays');
+});
