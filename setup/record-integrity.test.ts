@@ -173,3 +173,33 @@ test('[LIFE-004] without its before backup uninstall keeps containers it cannot 
   assert.equal(after.theme, 'dark');
   assert.doesNotMatch(readFileSync(settings, 'utf8'), /context-engine/);
 });
+
+async function killedInstallFor(w: ReturnType<typeof world>): Promise<string> {
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+  return join(w.stateDir, 'setup', 'claude.pending.json');
+}
+
+for (const run of ['undo']) {
+  test(`[LIFE-015] a tracked file and its before backup both gone are reported by the copy (${run})`, async () => {
+    const w = world();
+    const tracked = join(w.claudeHome, 'settings.json');
+    writeFileSync(tracked, '{"theme": "dark"}\n');
+    let record: string;
+    if (run === 'undo') record = await killedInstallFor(w);
+    else { assert.equal(w.ce(['install']).status, 0); record = join(w.stateDir, 'setup', 'claude.json'); }
+    const copy = join(snapshotOf(record), 'before', '0-settings.json');
+    unlinkSync(copy);
+    unlinkSync(tracked);
+
+    const r = w.ce(['uninstall']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const line = r.stdout.split('\n').find((l) => l.includes(`${tracked}:`)) ?? '';
+    assert.ok(line.includes(copy), `the report names the lost copy ${copy}:\n${r.stdout}`);
+    assert.doesNotMatch(line, /removed/, `nothing is claimed removed from a file that is gone:\n${line}`);
+    assert.equal(existsSync(tracked), false, 'settings.json stays missing');
+  });
+}
