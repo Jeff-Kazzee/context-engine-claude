@@ -42,7 +42,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
-  const tool = (e: any) => handlers.get('tool.call')!($, e, async (v: any) => v);
+  const tool = (e: any, result?: unknown) => handlers.get('tool.call')!($, e, async (v: any) => result ?? v);
   const append = (e: any) => handlers.get('session.append')!($, e, async (v: any) => v);
   const end = () => handlers.get('session.end')!($, {}, async () => ({}));
   const step = async () => {
@@ -52,6 +52,9 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
   };
   return { $, handlers, compact, tool, append, end, step, calls, argvCalls, logs, statuses, nativeCalls: () => nativeCalls };
 }
+
+/** The host's Read record for the whole Working Context holding the fixture's committed snapshot. */
+const wholeRead = { result: { type: 'text', file: { filePath: '/proj/.context-engine/S1/context.md', content: 'current context', numLines: 1, startLine: 1, totalLines: 1 } } };
 
 test('post-open plugin core failure skips native compaction on repeated turns', async () => {
   const w = fixture();
@@ -102,14 +105,14 @@ test('successful setup output directs activation to the Claude-specific command'
 });
 
 test('shell edits preserve a same-turn read while ordinary duplicate reads are stubbed', async () => {
-  const w = fixture();
+  const w = fixture([], { recordSuccess: true });
   await w.compact('plugin');
   const read = { tool: 'Read', file_path: '/proj/.context-engine/S1/context.md', tool_use_id: 'r1' };
   const result = { message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'EDITED_CONTEXT_SENTINEL' }] } };
-  await w.tool(read);
+  await w.tool(read, wholeRead);
   assert.ok(!JSON.stringify(await w.append(result)).includes('EDITED_CONTEXT_SENTINEL'));
   await w.tool({ tool: 'Bash', command: 'synthetic shell edit', tool_use_id: 'b1' });
-  await w.tool({ ...read, tool_use_id: 'r2' });
+  await w.tool({ ...read, tool_use_id: 'r2' }, wholeRead);
   assert.match(JSON.stringify(await w.append({ message: { content: [{ ...result.message.content[0], tool_use_id: 'r2' }] } })), /EDITED_CONTEXT_SENTINEL/);
 });
 
@@ -318,16 +321,36 @@ test('compaction uses the committed reply when the live file changes before deli
 });
 
 test('renewed: session start clears edited-read state and stale tool IDs',async()=>{
- const w=fixture();await w.handlers.get('session.start')!(w.$,{},async()=>({}));
+ // Stubbing needs a compaction frame. That compaction also clears the edit flag, so the Bash
+ // half checks that a new session can stub again, not session.start's own flag reset.
+ const w=fixture([],{recordSuccess:true});await w.handlers.get('session.start')!(w.$,{},async()=>({}));await w.compact('plugin');
  const path='/proj/.context-engine/S1/context.md';
- await w.tool({tool:'Read',file_path:path,tool_use_id:'old'});
+ await w.tool({tool:'Read',file_path:path,tool_use_id:'old'},wholeRead);
  await w.handlers.get('session.start')!(w.$,{},async()=>({}));
  const old={message:{content:[{type:'tool_result',tool_use_id:'old',content:'UNRELATED_REUSED_ID'}]}};
  assert.match(JSON.stringify(await w.append(old)),/UNRELATED_REUSED_ID/);
  await w.tool({tool:'Bash',command:'synthetic edit'});
- await w.handlers.get('session.start')!(w.$,{},async()=>({}));
- await w.tool({tool:'Read',file_path:path,tool_use_id:'new'});
+ await w.handlers.get('session.start')!(w.$,{},async()=>({}));await w.compact('plugin');
+ await w.tool({tool:'Read',file_path:path,tool_use_id:'new'},wholeRead);
  assert.doesNotMatch(JSON.stringify(await w.append({message:{content:[{type:'tool_result',tool_use_id:'new',content:'NEW_SESSION_DUPLICATE'}]}})),/NEW_SESSION_DUPLICATE/);
+});
+
+test('[CLA-018] session start forgets the earlier frame, so a Read of its text is not stubbed', async () => {
+  const w = fixture([], { recordSuccess: true });
+  await w.handlers.get('session.start')!(w.$, {}, async () => ({}));
+  await w.compact('plugin');
+  await w.handlers.get('session.start')!(w.$, {}, async () => ({}));
+  await w.tool({ tool: 'Read', file_path: '/proj/.context-engine/S1/context.md', tool_use_id: 'r1' }, wholeRead);
+  assert.match(JSON.stringify(await w.append({ message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'OLD_FRAME_TEXT' }] } })), /OLD_FRAME_TEXT/);
+});
+
+test('[CLA-016] tool calls with no pending stub never read the host result record', async () => {
+  const w = fixture([], { recordSuccess: true });
+  await w.compact('plugin');
+  const guarded = { get result(): never { throw new Error('result record read'); } };
+  for (const call of [{ tool: 'Read', file_path: '/proj/.context-engine/S1/context.md', tool_use_id: 'a1', agentId: 'agent-1' }, { tool: 'Grep', tool_use_id: 'g1' }]) {
+    assert.equal(await w.tool(call, guarded), guarded);
+  }
 });
 
 test('renewed6: a retained failed close survives later sessions and is retried',async()=>{
