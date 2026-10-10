@@ -319,3 +319,23 @@ for(const damage of ['omitted','replaced'] as const)test('wave31: an index shard
   recordOnce(options,'COMPLETE_1',target);
   assert.equal(rowsWith(p.events,'COMPLETE_1'),1);
 });
+
+test('wave31: an index entry whose row a storage revert removed is never claimed',()=>{
+  const options={...fixture(),sessionId:'W31-LOSTHIT',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
+  recordOnce(options,'KEEP_FIRST','00000000-0000-4000-8000-000000007001');
+  recordOnce(options,'KEEP_SECOND','00000000-0000-4000-8000-000000007002');
+  const cut=fs.statSync(p.events).size,head=fs.readFileSync(p.head),wc=fs.readFileSync(p.workingContext),revisions=new Set(fs.readdirSync(p.revisions));
+  const lost='LOST_ROW '+'l'.repeat(2000),operationId='00000000-0000-4000-8000-000000007003';
+  recordOnce(options,lost,operationId);
+  const bytes=fs.readFileSync(p.events),covered=bytes.indexOf(0x0a,bytes.indexOf('LOST_ROW'))+1;
+  // A storage revert loses the record but keeps the index entry that names it.
+  fs.truncateSync(p.events,cut);fs.writeFileSync(p.head,head);fs.writeFileSync(p.workingContext,wc);
+  for(const name of fs.readdirSync(p.revisions))if(!revisions.has(name))fs.rmSync(join(p.revisions,name));
+  fs.rmSync(join(p.stateDir,'recovery.json'),{force:true});
+  // The log regrows to exactly the covered offset, so the head, offset and shard digest all still pass.
+  const base=Buffer.byteLength(JSON.stringify({type:'test-pad',p:'',at:new Date().toISOString()}))+1;
+  appendLog(p.events,{type:'test-pad',p:'p'.repeat(covered-cut-base)});
+  assert.equal(fs.statSync(p.events).size,covered);
+  recordOnce(options,lost,operationId);
+  assert.equal(rowsWith(p.events,'LOST_ROW'),1);
+});
