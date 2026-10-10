@@ -137,3 +137,39 @@ test('[SAFE-011] a hard-linked backup copy refuses uninstall before any runner c
   assert.deepEqual(tree(w.claudeHome), installed, 'no runner command ran and no tracked file changed');
   assert.ok(existsSync(pointer), 'the install record stays');
 });
+
+test('[LIFE-015] without its before backup the undo keeps every value it did not write and lists it', async () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  // A user value at a Context Engine key name that the killed install never wrote, and two empty containers.
+  writeFileSync(settings, `${JSON.stringify({ theme: 'dark', enabledPlugins: { 'context-engine@context-engine': false }, pluginConfigs: {}, extraKnownMarketplaces: {} })}\n`);
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+  const pending = join(w.stateDir, 'setup', 'claude.pending.json');
+  unlinkSync(join(snapshotOf(pending), 'before', '0-settings.json'));
+
+  const r = w.ce(['uninstall']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')), { theme: 'dark', enabledPlugins: { 'context-engine@context-engine': false }, pluginConfigs: {}, extraKnownMarketplaces: {} },
+    'only the marketplace entry the install wrote is gone, and every container stays');
+  assert.ok(r.stdout.includes(`${settings}: enabledPlugins."context-engine@context-engine" left in place because the backup copy is missing`), r.stdout);
+  assert.doesNotMatch(r.stdout, /Only Context Engine's entries were removed/, 'the report claims no more than it did');
+});
+
+test('[LIFE-004] without its before backup uninstall keeps containers it cannot prove it created', () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, `${JSON.stringify({ theme: 'dark', pluginConfigs: {} })}\n`);
+  assert.equal(w.ce(['install']).status, 0);
+  unlinkSync(join(snapshotOf(join(w.stateDir, 'setup', 'claude.json')), 'before', '0-settings.json'));
+
+  const r = w.ce(['uninstall']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const after = JSON.parse(readFileSync(settings, 'utf8'));
+  assert.deepEqual(after.pluginConfigs, {}, 'the user\'s empty pluginConfigs stays, without the entries the install wrote');
+  assert.equal(after.theme, 'dark');
+  assert.doesNotMatch(readFileSync(settings, 'utf8'), /context-engine/);
+});
