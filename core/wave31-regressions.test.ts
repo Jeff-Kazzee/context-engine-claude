@@ -213,3 +213,31 @@ test('wave31: concurrent CLI calls with one operation ID append one row',async()
   const log=layout(f.projectRoot,'W31-LEASE',f.stateDir).events;
   assert.equal(fs.readFileSync(log,'utf8').split('\n').filter(line=>line.includes(operationId)).length,1);
 });
+
+/** One open, identified record and close, as one CLI call does. */
+function recordOnce(options:{projectRoot:string;stateDir:string;sessionId:string;runner:string;hardLimit:number},text:string,operationId?:string){
+  const o=openSession(options);assert.equal(o.status,'open');
+  try{o.session.record([{role:'tool',text}],operationId?{operationId}:undefined);}finally{o.session.close();}
+}
+const rowsWith=(log:string,marker:string)=>fs.readFileSync(log,'utf8').split('\n').filter(line=>line.includes('"runner-events"')&&line.includes(marker)).length;
+
+test('wave31: an operation index that covers more than a shortened Event Log is rebuilt',()=>{
+  const options={...fixture(),sessionId:'W31-OFFSET',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
+  recordOnce(options,'KEEP_ONE','00000000-0000-4000-8000-000000001001');
+  const cut=fs.statSync(p.events).size,head=fs.readFileSync(p.head),wc=fs.readFileSync(p.workingContext),revisions=new Set(fs.readdirSync(p.revisions));
+  recordOnce(options,'LOST_TWO '+'l'.repeat(4000),'00000000-0000-4000-8000-000000001002');
+  // The index covers the log through the end of the second identified row.
+  const bytes=fs.readFileSync(p.events),at=bytes.indexOf('LOST_TWO'),covered=bytes.indexOf(0x0a,at)+1;
+  // A storage revert loses that record. HEAD, revisions and the Working Context return to the cut.
+  fs.truncateSync(p.events,cut);fs.writeFileSync(p.head,head);fs.writeFileSync(p.workingContext,wc);
+  for(const name of fs.readdirSync(p.revisions))if(!revisions.has(name))fs.rmSync(join(p.revisions,name));
+  fs.rmSync(join(p.stateDir,'recovery.json'),{force:true});
+  recordOnce(options,'AFTER_LOSS','00000000-0000-4000-8000-000000001003');
+  // The log regrows to exactly the old covered offset, so the new identified row sits below it.
+  const base=Buffer.byteLength(JSON.stringify({type:'test-pad',p:'',at:new Date().toISOString()}))+1,size=fs.statSync(p.events).size;
+  assert.ok(covered-size-base>=0);
+  appendLog(p.events,{type:'test-pad',p:'p'.repeat(covered-size-base)});
+  assert.equal(fs.statSync(p.events).size,covered);
+  recordOnce(options,'AFTER_LOSS','00000000-0000-4000-8000-000000001003');
+  assert.equal(rowsWith(p.events,'AFTER_LOSS'),1);
+});
