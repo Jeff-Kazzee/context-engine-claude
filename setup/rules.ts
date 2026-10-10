@@ -22,13 +22,32 @@ function has(obj: unknown, path: string[]): boolean {
   return true;
 }
 
+/** A key path as people read it, e.g. enabledPlugins."x@y". */
+const keyName = (path: string[]) => path.map((k) => (/^[A-Za-z_][\w-]*$/.test(k) ? k : JSON.stringify(k))).join('.');
+
 /**
  * A JSON file where our entries are the keys at `paths` (e.g. ['enabledPlugins', 'x@y']). A
  * container our removal empties is removed too, unless the file had it before. A file that isn't
  * JSON is left alone. The rewrite is 2-space indented, as Claude Code writes these files.
+ * `written[i]` says whether a value at `paths[i]` is exactly what the install writes there.
  */
-export function jsonRule(paths: string[][]): Rule {
+export function jsonRule(paths: string[][], written: Array<(value: unknown) => boolean> = []): Rule {
   return {
+    stripWritten(text) {
+      const obj = parse(text);
+      if (!isObject(obj)) return { text, kept: [] };
+      const kept: string[] = [];
+      let changed = false;
+      paths.forEach((path, i) => {
+        let parent: unknown = obj;
+        for (const k of path.slice(0, -1)) parent = isObject(parent) ? parent[k] : undefined;
+        const last = path.at(-1)!;
+        if (!isObject(parent) || !(last in parent)) return;
+        if (written[i]?.(parent[last])) { delete parent[last]; changed = true; }
+        else kept.push(keyName(path));
+      });
+      return { text: changed ? `${JSON.stringify(obj, null, 2)}${text.endsWith('\n') ? '\n' : ''}` : text, kept };
+    },
     empty(text) { const value = parse(text); return isObject(value) && Object.keys(value).length === 0; },
     strip(text, before) {
       const obj = parse(text);
@@ -214,6 +233,7 @@ export function prependBlock(text: string | null, block: string, m: Markers): st
 /** A file where our entry is one marked block (appendBlock at the end, or prependBlock at the start). */
 export function blockRule(m: Markers): Rule {
   return {
+    stripWritten(text) { return { text: this.strip(text, null), kept: [] }; },
     strip(text) {
       const start = text.indexOf(`${m.begin}\n`);
       const stop = text.indexOf(`${m.end}\n`, start);
