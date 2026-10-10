@@ -261,3 +261,26 @@ test('wave31: an operation index bound to a replaced Event Log is rebuilt',()=>{
   recordOnce(options,text,operationId);
   assert.equal(rowsWith(p.events,operationId),1);
 });
+
+test('wave31: index files above their size bound are never loaded',()=>{
+  const options={...fixture(),sessionId:'W31-BOUND',runner:'test',hardLimit:1_000_000},p=layout(options.projectRoot,options.sessionId,options.stateDir);
+  recordOnce(options,'BOUND_ONE','00000000-0000-4000-8000-000000003001');
+  recordOnce(options,'BOUND_TWO','00000000-0000-4000-8000-000000003002');
+  // Inflate every index file far past any bound a lookup may load.
+  const files=fs.readdirSync(p.stateDir).filter(name=>name.startsWith('operations')&&!name.includes('.lock'));
+  assert.ok(files.length>0);
+  for(const name of files)fs.appendFileSync(join(p.stateDir,name),Buffer.alloc(32*1024*1024,0x78));
+  // Count the index bytes read while an exact retry and a new operation are recorded.
+  const read=fs.readSync,readFile=fs.readFileSync;let indexBytes=0;
+  const isIndex=(target:unknown)=>typeof target==='number'&&/\/operations[^/]*$/.test(fs.realpathSync(`/proc/self/fd/${target}`));
+  fs.readSync=((fd:number,...args:any[])=>{const n=(read as any)(fd,...args);if(isIndex(fd))indexBytes+=n;return n;}) as typeof fs.readSync;
+  fs.readFileSync=((target:any,...args:any[])=>{const out=(readFile as any)(target,...args);if(isIndex(target))indexBytes+=out.length;return out;}) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  try{
+    recordOnce(options,'BOUND_TWO','00000000-0000-4000-8000-000000003002');
+    recordOnce(options,'BOUND_THREE','00000000-0000-4000-8000-000000003003');
+  }finally{fs.readSync=read;fs.readFileSync=readFile;syncBuiltinESMExports();}
+  assert.ok(indexBytes<1024*1024,`read ${indexBytes} index bytes`);
+  assert.equal(rowsWith(p.events,'BOUND_TWO'),1);
+  assert.equal(rowsWith(p.events,'BOUND_THREE'),1);
+});
