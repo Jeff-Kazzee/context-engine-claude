@@ -75,6 +75,38 @@ test('[LIFE-015] enable and status refuse until an interrupted install is undone
   assert.equal(w.ce(['status']).status, 0, 'status works again after the undo');
 });
 
+test('[LIFE-015] a refused undo names the file, the record and the snapshot without a stack trace', async () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, SETTINGS);
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+  const pending = join(w.stateDir, 'setup', 'claude.pending.json');
+  const backups = join(w.stateDir, 'setup', 'backups');
+
+  // A tracked file that no longer parses blocks the undo. The refusal says so and names what to repair.
+  writeFileSync(settings, read(settings)!.replace(/\}\s*$/, ',}\n'));
+  for (const command of ['install', 'uninstall']) {
+    const r = w.ce([command]);
+    assert.notEqual(r.status, 0, `${command} refuses an undo over unparsable JSON`);
+    for (const name of [settings, pending, backups]) assert.ok(r.stderr.includes(name), `${command} names ${name}:\n${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /^\s+at /m, `${command} prints no stack trace`);
+    assert.doesNotMatch(r.stderr, /credential/, `${command} does not call a parse failure a credential`);
+  }
+
+  // A record that is not JSON cannot say what to undo. Every command names it.
+  writeFileSync(pending, '{"dir": ');
+  for (const command of ['install', 'uninstall', 'enable', 'status']) {
+    const r = w.ce([command]);
+    assert.notEqual(r.status, 0, `${command} refuses a corrupt interrupted install record`);
+    assert.ok(r.stderr.includes(pending), `${command} names ${pending}:\n${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /^\s+at /m, `${command} prints no stack trace`);
+  }
+});
+
 test('[LIFE-015] kill inside a guarded replacement never hides the live config', () => {
   const w = world();
   const settings = join(w.claudeHome, 'settings.json');
