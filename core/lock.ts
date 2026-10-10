@@ -138,7 +138,10 @@ export function acquireLock(path: string, me: LockHolder): Acquired {
 
 export function releaseLock(path: string, me: LockHolder, parentFd?: number): void {
   const current = readLock(path, parentFd);
-  if (current && current !== 'unreadable' && sameProcess(current, me) && (me.generation === undefined || current.generation === me.generation)) unlinkSync(atParent(path, parentFd));
+  if (current && current !== 'unreadable' && sameProcess(current, me) && (me.generation === undefined || current.generation === me.generation)) {
+    lockStep('release-checked', path);
+    unlinkSync(atParent(path, parentFd));
+  }
 }
 
 /** Thrown by `serialized` when the operation lock stays held by a live process past the timeout. */
