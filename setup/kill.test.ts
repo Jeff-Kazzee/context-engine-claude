@@ -47,6 +47,34 @@ test('[LIFE-015] SIGKILL during Claude install never becomes a silent baseline',
   assert.equal(existsSync(join(w.claudeHome, 'plugins', 'cache', 'context-engine')), false);
 });
 
+test('[LIFE-015] enable and status refuse until an interrupted install is undone', async () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, SETTINGS);
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+  const pending = join(w.stateDir, 'setup', 'claude.pending.json');
+  assert.ok(existsSync(pending), 'the kill left the interrupted install record');
+
+  for (const args of [['enable'], ['status'], ['status', '--json']]) {
+    const r = w.ce(args);
+    assert.notEqual(r.status, 0, `${args.join(' ')} refuses while the interrupted install is not undone. It said:\n${r.stdout}`);
+    assert.ok(r.stderr.includes(pending), `${args.join(' ')} names ${pending}:\n${r.stderr}`);
+    for (const recovery of ['context-engine-claude install', 'context-engine-claude uninstall']) assert.ok(r.stderr.includes(recovery), `${args.join(' ')} names \`${recovery}\`:\n${r.stderr}`);
+  }
+  assert.equal(existsSync(join(w.stateDir, 'participation')), false, 'the refused enable wrote no participation record');
+
+  const undo = w.ce(['uninstall']);
+  assert.equal(undo.status, 0, undo.stdout + undo.stderr);
+  assert.equal(read(settings), SETTINGS);
+  const enabled = w.ce(['enable']);
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.equal(w.ce(['status']).status, 0, 'status works again after the undo');
+});
+
 test('[LIFE-015] kill inside a guarded replacement never hides the live config', () => {
   const w = world();
   const settings = join(w.claudeHome, 'settings.json');
