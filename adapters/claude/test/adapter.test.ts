@@ -364,7 +364,7 @@ test('the reserve is the largest turn input observed this session, never under t
   assert.deepEqual(at({ contextTokens: 67_371, observed: [9_788] }).observed, [9_788]);
   // A small remainder (a compaction mid-turn) does not lower the reserve a full turn set.
   const later = at({ contextTokens: 67_371, deliveredTokens: 58_199, observed: [9_788] });
-  assert.deepEqual(later.observed, [9_788, 1_273]);
+  assert.deepEqual(later.observed, [9_788]);
   assert.equal(later.reserveTokens, 9_788);
   // A Working Context smaller than its readout said cannot make a turn negative.
   assert.deepEqual(at({ contextTokens: 40_000, deliveredTokens: 33_000, observed: [] }).observed, [0]);

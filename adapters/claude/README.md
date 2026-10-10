@@ -31,3 +31,5 @@ The installer stores the canonical shared-core CLI path in each plugin's support
 For source-layout development, omitting `coreCli` selects its explicit `checkout-relative` default. The installer always replaces that default with the retained checkout's absolute path. Empty or malformed explicit values remain errors.
 
 If a tool result has no room for an accepted edit notice, the adapter retains its static revision metadata for a later carrier. It rechecks the current delivery budget before returning the notice. Mid-turn budget estimates preserve the previous replacement baseline until the turn boundary. Status requires both installed plugins to be enabled and configured with canonical, readable core CLI paths. These configuration checks do not establish interactive loading.
+
+The context-budget observation stores only the running maximum for the current observation window. Repeated observations do not grow an array or expand an unbounded argument list. The replacement boundary still starts a new observation window.

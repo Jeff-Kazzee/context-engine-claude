@@ -19,6 +19,7 @@ import {
   layout,
   readBytes,
   readLog,
+  readLogRows,
   readWorkingContextFile,
   assertWorkingContextDir,
   removeTemps,
@@ -28,6 +29,7 @@ import {
   sha,
   truncateTornTail,
   type Layout,
+  type LogRange,
 } from './store.ts';
 import { countHeaders, parseTurns, renderTurns, type Turn } from './turns.ts';
 import { checkRefs, experimentOn, staleText, type StaleReport } from './refs.ts';
@@ -130,7 +132,7 @@ export interface Session {
    * `native-compaction`). The Event Log records the delivery as COMPACTION_ONLY_FALLBACK.
    */
   nativeCompaction(events: RunnerEvent[]): SyncResult;
-  /** Releases the lock. The session can be reopened later from its latest revision. */
+  /** Releases the shared lock and invalidates every facade using that lock generation. Reopen to continue. */
   close(): void;
 }
 
@@ -141,6 +143,8 @@ interface Head {
   sha: string;
   parent: string | null;
   through: number;
+  /** Identity of the durable event-log boundary written before this HEAD. */
+  prepared?: string;
   materialized: boolean;
   /** What made this revision (absent in HEADs written before it was recorded). */
   kind?: CommitKind;
@@ -157,6 +161,26 @@ interface Replacement {
 }
 
 type Pending = { seq: number; event: RunnerEvent; replace?: Replacement };
+
+/**
+ * The operation index lists the first identified runner-events row of each record operation ID.
+ * It is derived from the Event Log and complete through byte `through` of it. A lookup searches
+ * the index bytes, scans only log rows after `through`, checks a hit against its own row, and
+ * rebuilds a missing, damaged or disagreeing index from the whole log.
+ */
+type IndexedOperation = { sha: string; start: number; end: number };
+type OperationLookup = { hit?: IndexedOperation; through: number; writable: boolean };
+const OPERATION_INDEX = 'operations.jsonl';
+
+function loggedOperation(entry: Record<string, unknown>): { id: string; sha: string } | undefined {
+  if (entry.type !== 'runner-events' || !entry.operation || typeof entry.operation !== 'object') return undefined;
+  const { id, sha: digest } = entry.operation as { id?: unknown; sha?: unknown };
+  return typeof id === 'string' && typeof digest === 'string' ? { id, sha: digest } : undefined;
+}
+
+function indexLine(operation: { id: string; sha: string }, row: LogRange): Record<string, unknown> {
+  return { id: operation.id, sha: operation.sha, start: row.start, end: row.end, through: row.end };
+}
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -180,6 +204,7 @@ const RESTORE_WORDS: Record<RestoreReason, string> = {
 export function openSession(opts: OpenOptions): OpenResult {
   if (!Number.isSafeInteger(opts.hardLimit) || opts.hardLimit <= 0) throw new Error('hardLimit must be a positive safe integer of characters');
   if (opts.budgetTokens !== undefined && (!Number.isFinite(opts.budgetTokens) || opts.budgetTokens <= 0)) throw new Error('budgetTokens must be a positive number of tokens');
+  if (opts.ownerPid !== undefined && (!Number.isSafeInteger(opts.ownerPid) || opts.ownerPid <= 0)) throw new Error('ownerPid must be a positive safe integer');
   const stateRoot = resolveStateRoot(opts.stateDir);
   const l = layout(opts.projectRoot, opts.sessionId, stateRoot);
   ensureDirs(l, stateRoot);
@@ -187,10 +212,10 @@ export function openSession(opts: OpenOptions): OpenResult {
   const got = acquireLock(l.lock, me);
   if (got.status === 'refused') return { status: 'refused', holder: got.holder };
   try {
-    // Cut a torn Event Log tail before anything else is appended to it.
-    const tornBytes = truncateTornTail(l.events);
-    const core = new Core(l, opts.hardLimit, me, experimentOn('stale-refs', opts.experiments) ? opts.projectRoot : null, opts.budgetTokens ?? null);
-    core.recover(tornBytes);
+    const published = readLock(l.lock);
+    if (!published || published === 'unreadable' || !published.generation || published.pid !== me.pid || published.hostname !== me.hostname || published.startMarker !== me.startMarker) throw new Error('session lock ownership changed during open');
+    const core = new Core(l, opts.hardLimit, published, experimentOn('stale-refs', opts.experiments) ? opts.projectRoot : null, opts.budgetTokens ?? null);
+    core.recover();
     if (got.takeoverFrom) appendLog(l.events, { type: 'lock-takeover', from: got.takeoverFrom, to: me, reason: 'previous holder is dead' });
     return { status: 'open', session: core.facade() };
   } catch (e) {
@@ -247,10 +272,15 @@ function readHead(path: string): Buffer | undefined { return readBytes(path, 409
 /** Independent corruption bound; legitimate runner appends can exceed the model edit limit. */
 export const SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024;
 
+function boundaryIdentity(head: Pick<Head, 'rev' | 'sha' | 'parent' | 'through' | 'kind'>): string {
+  return sha(JSON.stringify([head.rev, head.sha, head.parent, head.through, head.kind]));
+}
+
 function decodeHead(raw: Buffer | undefined): Head | null {
   if(!raw)return null;
   const head=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)) as Head;
   if(!head || Array.isArray(head) || !Number.isSafeInteger(head.rev) || head.rev<1 || typeof head.sha!=='string' || !/^[a-f0-9]{64}$/.test(head.sha) || !Number.isSafeInteger(head.through) || head.through<0 || typeof head.materialized!=='boolean' || !(head.parent===null || typeof head.parent==='string'&&/^[a-f0-9]{64}$/.test(head.parent)) || !(head.kind===undefined || ['init','model-edit','runner-append','native-compaction'].includes(head.kind)))throw new Error('invalid private-state HEAD');
+  if (head.prepared !== undefined && head.prepared !== boundaryIdentity(head)) throw new Error('HEAD through or revision metadata conflicts with its prepared boundary');
   return head;
 }
 function readSnapshot(l: Layout,head: Head): string {
@@ -270,6 +300,8 @@ class Core {
   private unloggedCommit: { head: Head; text: string } | undefined;
   private appendUncertain=false;
   private recoveryReceiptHeads: Array<{rev:number;sha:string}> = [];
+  /** The operation index as of this call's lookup, extended by the row the call appends. */
+  private operationIndex: OperationLookup | undefined;
   // Acknowledgements are confirmed only on a later call, after the result returned.
   private returnedReceiptHeads: Array<{rev:number;sha:string}> = [];
   private readonly l: Layout;
@@ -296,15 +328,26 @@ class Core {
       stateDir: this.l.stateDir,
       frameKey: sessionFrameKey(this.l.stateDir),
       sync: () => this.guard(() => this.finishResult(this.sync())),
-      confirmReceiptReturn: () => { if(this.closed)throw new Error('session is closed'); this.confirmReturnedReceipts(); this.saveRecoveryCheckpoint(); },
+      confirmReceiptReturn: () => { this.assertOpen(); this.confirmReturnedReceipts(); this.saveRecoveryCheckpoint(); },
       record: (events, options) => this.guard(() => this.finishResult(this.record(events, false, options?.maxBytes, options?.operationId))),
       nativeCompaction: (events) => this.guard(() => this.finishResult(this.record(events, true))),
       close: () => this.close(),
     };
   }
 
-  private guard<T>(fn: () => T, repair = true): T {
+  private assertOpen(): void {
     if (this.closed) throw new Error('session is closed');
+    try {
+      const current = readLock(this.l.lock);
+      if (current && current !== 'unreadable' && current.generation === this.me.generation
+          && current.pid === this.me.pid && current.hostname === this.me.hostname && current.startMarker === this.me.startMarker) return;
+    } catch { /* A removed or unverifiable lock invalidates this facade. */ }
+    this.closed = true;
+    throw new Error('session lock was released or replaced; session is closed');
+  }
+
+  private guard<T>(fn: () => T, repair = true): T {
+    this.assertOpen();
     this.confirmReturnedReceipts();
     if(repair&&this.appendUncertain)throw new Error('Event Log append may have persisted; close and reopen this session before retrying');
     if (repair && this.unloggedCommit) {
@@ -346,7 +389,7 @@ class Core {
       const log = this.checkpointLog();
       const m = c.memory;
       const nonnegative = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
-      if (c.version !== 2 || !log || JSON.stringify(c.log) !== JSON.stringify(log) || c.head !== sha(readHead(this.l.head)?.toString('utf8') ?? '') || c.budget !== this.budgetTokens || !nonnegative(c.lastSeq) || c.lastSeq !== (head?.through ?? 0) || !m || ![0,25,50,75].includes(m.announced) || !Array.isArray(m.growth) || m.growth.length > 3 || !m.growth.every(nonnegative) || !nonnegative(m.lastTokens) || !(m.loggedBudget === null || (nonnegative(m.loggedBudget) && m.loggedBudget > 0))) return false;
+      if (c.version !== 3 || !log || JSON.stringify(c.log) !== JSON.stringify(log) || c.head !== sha(readHead(this.l.head)?.toString('utf8') ?? '') || c.budget !== this.budgetTokens || !nonnegative(c.lastSeq) || c.lastSeq !== (head?.through ?? 0) || !m || ![0,25,50,75].includes(m.announced) || !Array.isArray(m.growth) || m.growth.length > 3 || !m.growth.every(nonnegative) || !nonnegative(m.lastTokens) || !(m.loggedBudget === null || (nonnegative(m.loggedBudget) && m.loggedBudget > 0))) return false;
       this.lastSeq = c.lastSeq;
       this.memory = { announced: m.announced, growth: [...m.growth], lastTokens: m.lastTokens, loggedBudget: m.loggedBudget };
       return true;
@@ -359,7 +402,7 @@ class Core {
       const head = this.head();
       const log = this.checkpointLog();
       if (!log || this.unloggedCommit || this.recoveryReceiptHeads.length || this.returnedReceiptHeads.length || this.unapplied.length || this.lastSeq !== (head?.through ?? 0)) return;
-      const payload = { version: 2, log, head: sha(readHead(this.l.head)?.toString('utf8') ?? ''), budget: this.budgetTokens, lastSeq: this.lastSeq, memory: this.memory };
+      const payload = { version: 3, log, head: sha(readHead(this.l.head)?.toString('utf8') ?? ''), budget: this.budgetTokens, lastSeq: this.lastSeq, memory: this.memory };
       atomicWrite(join(this.l.stateDir, 'recovery.json'), JSON.stringify({ ...payload, checksum: sha(JSON.stringify(payload)) }), 'recovery-checkpoint-tmp');
     } catch { /* A cache failure never changes the session result; next open rebuilds. */ }
   }
@@ -467,9 +510,13 @@ class Core {
     crashPoint('before-head');
     const materialize = kind === 'runner-append' || kind === 'native-compaction';
     const head: Head = { rev, sha: sha(text), parent: prev?.sha ?? null, through: through ?? prev?.through ?? 0, materialized: !materialize, kind };
+    head.prepared = boundaryIdentity(head);
+    // This witness must survive even if final revision accounting is interrupted.
+    try { appendLog(this.l.events, { type: 'revision-prepared', rev, sha: head.sha, parent: head.parent, kind, through: head.through, prepared: head.prepared }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'CE_LOG_APPEND_AMBIGUOUS') this.appendUncertain = true; throw error; }
     this.unloggedCommit = { head, text };
     atomicWrite(this.l.head, JSON.stringify(head), 'head-tmp');
-    appendLog(this.l.events, { type: 'revision', rev, kind, sha: head.sha, chars: text.length });
+    appendLog(this.l.events, { type: 'revision', rev, kind, sha: head.sha, chars: text.length, through: head.through, prepared: head.prepared });
     this.unloggedCommit = undefined;
     if (this.budgetTokens !== null) remember(this.memory, kind, text.length, this.budgetTokens);
     if (materialize) this.materialize(head, text);
@@ -565,10 +612,8 @@ class Core {
     const synced = this.retainReceipt(this.sync());
     if (operation) {
       // Identity and events share one durable row, including during replay after a failed return.
-      for (const entry of readLog(this.l.events)) {
-        if (entry.type !== 'runner-events' || !entry.operation || typeof entry.operation !== 'object') continue;
-        const recorded = entry.operation as { id?: unknown; sha?: unknown };
-        if (recorded.id !== operation.id) continue;
+      const recorded = this.findOperation(operation.id);
+      if (recorded) {
         if (recorded.sha !== operation.sha) throw new Error('record operation identifier was used for different input');
         return this.result(this.apply(), synced.receipt);
       }
@@ -586,16 +631,121 @@ class Core {
     const previewHead=this.head();
     const prospective = this.renderPending([...this.unapplied, ...preview].filter(p=>p.seq>(previewHead?.through??0)),previewHead);
     if (Buffer.byteLength(prospective.text, 'utf8') > maxBytes) throw new Error(`revision snapshot exceeds the ${maxBytes === SNAPSHOT_MAX_BYTES ? '64 MiB' : maxBytes+' byte'} publication limit`);
-    try {appendLog(this.l.events, { type: 'runner-events', events: numbered, ...(operation ? { operation } : {}), ...(replacement ? { replace: replacement } : {}) });}
+    let row: LogRange;
+    try {row=appendLog(this.l.events, { type: 'runner-events', events: numbered, ...(operation ? { operation } : {}), ...(replacement ? { replace: replacement } : {}) });}
     catch(e) {if((e as NodeJS.ErrnoException).code==='CE_LOG_APPEND_AMBIGUOUS')this.appendUncertain=true;throw e;}
     this.lastSeq += numbered.length;
     if (replacement) numbered[0]!.replace = replacement;
     this.unapplied.push(...numbered);
     crashPoint('after-log');
+    if (operation) this.indexOperation(operation, row);
     const head = this.apply();
     const r = this.result(head);
     if (synced.receipt) r.receipt = synced.receipt;
     return r;
+  }
+
+  private operationIndexPath(): string { return join(this.l.stateDir, OPERATION_INDEX); }
+
+  private logIdentity(): { dev: string; ino: string; size: number } | undefined {
+    try {
+      const st = statSync(this.l.events, { bigint: true });
+      return { dev: String(st.dev), ino: String(st.ino), size: Number(st.size) };
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; }
+  }
+
+  /** Finds the first row of an operation ID without reading the whole Event Log in the normal path. */
+  private findOperation(id: string): IndexedOperation | undefined {
+    let found = this.searchOperationIndex(id);
+    if (found?.hit && !this.operationRowMatches(id, found.hit)) found = undefined;
+    found ??= this.rebuildOperationIndex(id);
+    this.operationIndex = found;
+    return found.hit;
+  }
+
+  /** Searches the persisted index, then indexes log rows after it. Undefined when it is missing or damaged. */
+  private searchOperationIndex(id: string): OperationLookup | undefined {
+    try {
+      const log = this.logIdentity();
+      const bytes = log && readBytes(this.operationIndexPath());
+      if (!log || !bytes) return undefined;
+      // A torn final line is not part of the index. The next append cuts it.
+      const index = bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1);
+      const line = (start: number) => {
+        const end = index.indexOf(0x0a, start);
+        return end < 0 ? undefined : JSON.parse(decoder.decode(index.subarray(start, end))) as Record<string, unknown>;
+      };
+      const header = line(0), last = line(index.lastIndexOf(0x0a, index.length - 2) + 1);
+      if (!header || header.type !== 'operation-index' || header.dev !== log.dev || header.ino !== log.ino || header.through !== 0) return undefined;
+      if (!last || !Number.isSafeInteger(last.through) || (last.through as number) > log.size) return undefined;
+      let through = last.through as number, hit: IndexedOperation | undefined;
+      const at = index.indexOf(`\n{"id":"${id}"`);
+      if (at >= 0) {
+        const entry = line(at + 1);
+        if (!entry || entry.id !== id || typeof entry.sha !== 'string' || !Number.isSafeInteger(entry.start) || !Number.isSafeInteger(entry.end)
+            || (entry.end as number) <= (entry.start as number) || entry.through !== entry.end || (entry.end as number) > through) return undefined;
+        hit = { sha: entry.sha, start: entry.start as number, end: entry.end as number };
+      }
+      const found: OperationLookup = { through, writable: true };
+      if (through < log.size) {
+        for (const row of readLogRows(this.l.events, through)) {
+          const operation = loggedOperation(row.entry);
+          if (operation) {
+            if (!hit && !found.hit && operation.id === id) found.hit = { sha: operation.sha, start: row.start, end: row.end };
+            if (found.writable) {
+              try { appendLog(this.operationIndexPath(), indexLine(operation, row)); }
+              catch { found.writable = false; }
+            }
+          }
+          through = row.end;
+        }
+      }
+      found.through = through;
+      if (hit) found.hit = hit;
+      return found;
+    } catch { return undefined; }
+  }
+
+  /** A hit must name its own complete row, so the index never stands in for log data. */
+  private operationRowMatches(id: string, hit: IndexedOperation): boolean {
+    try {
+      for (const row of readLogRows(this.l.events, hit.start)) {
+        const operation = loggedOperation(row.entry);
+        return row.end === hit.end && operation?.id === id && operation.sha === hit.sha;
+      }
+    } catch { /* A range that does not start a record disagrees with the log. */ }
+    return false;
+  }
+
+  /** Recovery path: one full Event Log scan, then an atomic replacement of the index. */
+  private rebuildOperationIndex(id: string): OperationLookup {
+    const log = this.logIdentity();
+    if (!log) return { through: 0, writable: false };
+    const lines = [JSON.stringify({ type: 'operation-index', dev: log.dev, ino: log.ino, through: 0 })];
+    const seen = new Set<string>();
+    const found: OperationLookup = { through: 0, writable: true };
+    for (const row of readLogRows(this.l.events)) {
+      const operation = loggedOperation(row.entry);
+      if (operation && !seen.has(operation.id)) {
+        seen.add(operation.id);
+        if (operation.id === id) found.hit = { sha: operation.sha, start: row.start, end: row.end };
+        lines.push(JSON.stringify(indexLine(operation, row)));
+      }
+      found.through = row.end;
+    }
+    lines.push(JSON.stringify({ through: found.through }));
+    try { atomicWrite(this.operationIndexPath(), lines.join('\n') + '\n', 'operation-index-tmp'); }
+    catch { found.writable = false; }
+    return found;
+  }
+
+  /** Extends the index with this call's own row when the index reaches exactly to its start. */
+  private indexOperation(operation: { id: string; sha: string }, row: LogRange): void {
+    const index = this.operationIndex;
+    this.operationIndex = undefined;
+    if (!index?.writable || index.through !== row.start) return;
+    try { appendLog(this.operationIndexPath(), indexLine(operation, row)); }
+    catch { /* The next lookup scans the Event Log from the last indexed offset. */ }
   }
 
   /**
@@ -655,7 +805,7 @@ class Core {
   }
 
   close(): void {
-    if (this.closed) throw new Error('session is closed');
+    this.assertOpen();
     let failed = false;
     try {
       this.confirmReturnedReceipts();
@@ -683,6 +833,8 @@ class Core {
     for (const entry of readLog(this.l.events)) {
       if (head && entry.type === 'revision' && entry.rev === head.rev && entry.sha === head.sha) {
         if (head.kind && (entry.kind !== head.kind || entry.chars !== snapshot().length)) throw new Error('committed revision accounting metadata conflicts with HEAD; refusing recovery');
+        if (entry.through !== undefined && entry.through !== head.through) throw new Error('committed revision accounting through conflicts with HEAD; refusing recovery');
+        if (entry.prepared !== undefined && entry.prepared !== head.prepared) throw new Error('committed revision accounting identity conflicts with HEAD; refusing recovery');
         logged = true;
       }
       if (entry.type === 'revision' && entry.recovered === true) {
@@ -696,7 +848,7 @@ class Core {
     }
     if (head?.kind && !logged) {
       const text = snapshot();
-      const entry = {rev:head.rev,kind:head.kind,sha:head.sha,chars:text.length};
+      const entry = {rev:head.rev,kind:head.kind,sha:head.sha,chars:text.length,through:head.through,...(head.prepared ? {prepared:head.prepared} : {})};
       appendLog(this.l.events, {type:'revision',...entry,recovered:true});
       pending.set(`${head.rev}:${head.sha}`, entry);
     }
@@ -720,9 +872,44 @@ class Core {
     return receipts[0] ? {...receipts[0],text:receipts.map(receipt=>receipt.text).join('\n')} : undefined;
   }
 
-  recover(tornBytes: number): void {
+  /** Validate the commit boundary before any recovery writes, including torn-tail repair. */
+  private validateHeadBoundary(head: Head | null): void {
+    let prepared = false, hasPreparation = false, lastSequence = 0;
+    const legacyBoundaries = new Map<number, number>();
+    for (const entry of readLog(this.l.events)) {
+      if (entry.type === 'runner-events') {
+        const events = entry.events as Pending[];
+        if (events.length) lastSequence = events.at(-1)!.seq;
+      }
+      if (!head) continue;
+      if (entry.type === 'revision-prepared' && entry.rev === head.rev) {
+        hasPreparation = true;
+        if (head.prepared !== undefined && entry.prepared === head.prepared) {
+          if (entry.sha !== head.sha || entry.parent !== head.parent || entry.kind !== head.kind || entry.through !== head.through) throw new Error('prepared revision accounting conflicts with HEAD');
+          prepared = true;
+        }
+      }
+      // Old normal accounting follows applied runner events. Recovered accounting
+      // was reconstructed from HEAD and cannot independently corroborate it.
+      if (entry.type === 'revision' && entry.recovered !== true && typeof entry.rev === 'number') {
+        const boundary = entry.kind === 'runner-append' || entry.kind === 'native-compaction' ? lastSequence
+          : entry.kind === 'init' ? 0 : entry.kind === 'model-edit' ? legacyBoundaries.get(entry.rev - 1) : undefined;
+        if (boundary !== undefined) {
+          legacyBoundaries.set(entry.rev, boundary);
+          if (head.prepared === undefined && entry.rev === head.rev && entry.sha === head.sha && boundary !== head.through) throw new Error('legacy HEAD through conflicts with durable revision accounting');
+        }
+      }
+    }
+    if (head && ((head.prepared !== undefined && !prepared) || (head.prepared === undefined && hasPreparation))) throw new Error('HEAD is missing its independently prepared sequence boundary; refusing recovery');
+    // A legacy HEAD with missing accounting has no independent sequence witness.
+    // Preserve its historical recovery behavior until a normal new commit occurs.
+  }
+
+  recover(): void {
     const head = this.head();
     const cached = this.loadRecoveryCheckpoint();
+    if (!cached) this.validateHeadBoundary(head);
+    const tornBytes = truncateTornTail(this.l.events);
     const repairedReceipt = cached ? undefined : this.repairRevisionLog(head);
     const removed = removeTemps([this.l.stateDir, this.l.revisions], [dirname(this.l.workingContext)]);
 

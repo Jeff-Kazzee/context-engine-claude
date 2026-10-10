@@ -210,7 +210,7 @@ async function budgetNow($: EngineInterface, observeTurn = true): Promise<Workin
   if (observeTurn) delivered = undefined;
   if (b) {
     if (observeTurn) turnInputs = b.observed;
-    log($, `Working Context budget ${b.budgetTokens} tokens${b.exhausted ? ' (no room: Compaction-only fallback)' : ''} (${b.source} ${b.sharedTokens} minus Pinned Prefix ${b.pinnedTokens} minus turn reserve ${b.reserveTokens}; turns observed ${b.observed.length})`, 'debug');
+    log($, `Working Context budget ${b.budgetTokens} tokens${b.exhausted ? ' (no room: Compaction-only fallback)' : ''} (${b.source} ${b.sharedTokens} minus Pinned Prefix ${b.pinnedTokens} minus turn reserve ${b.reserveTokens}; largest observed turn input ${b.observed[0] ?? 'none'})`, 'debug');
   }
   return b;
 }

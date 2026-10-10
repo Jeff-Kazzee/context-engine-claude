@@ -2,9 +2,9 @@
 
 **Release candidate:** tool-schema prose and fixtures are independently authored here. Publication still requires review of this exact snapshot and its fresh history; see [PROVENANCE.md](PROVENANCE.md).
 
-**Source approval and installation acceptance:** this candidate is in an open PR targeting `dev`. Changes move from the topic branch to `dev`, then through a separately approved promotion to `main`. Main remains bootstrap-only. Source merge requires passing offline checks, independent review and Jeff's approval of the exact head.
+**Source approval and installation acceptance:** changes target `dev`, then move to `main` after the applicable acceptance gates and owner authorization. Verify the exact head commit, its CI results and independent review before an installation trial. A branch name or an earlier passing commit does not establish acceptance of this snapshot.
 
-Real persistent plugin loading, interactive delivery and long-session performance remain unverified. These are installation/release acceptance gaps, not substitutes for source review. Do not recommend installation until a supported-host trial proves next-request delivery. No model evaluations or host configuration changes are part of the offline source checks.
+Ordinary-profile persistent plugin loading, interactive delivery and bounded long-session functional acceptance remain unverified. Claude also requires acceptance of the interactive bridge between its two installed plugins. These checks must prove the documented next-request and read-back behavior on the supported host. Comparative performance research is outside these release gates. Offline source checks do not make provider calls or change host configuration.
 
 **Shared-core correction:** Working Context writes now use an anchored, verified parent directory. Synthetic Linux parent-swap regressions cover swaps before open, temporary-file creation and rename. Both plugin candidates pin this correction; these checks do not establish real-host installation acceptance.
 
@@ -26,9 +26,9 @@ Copy the following prompt, replacing the project placeholder before sending it:
 Set up Context Engine for Claude Code from
 https://github.com/Jeff-Kazzee/context-engine-claude
 for this project: <absolute project path>.
-This is the open PR candidate on release/runtime-plugin-agent-guides; main is
-bootstrap-only. Verify the candidate commit and source review/owner approval
-before any installation trial. Read the CURRENT README.md, AGENTS.md, PROVENANCE.md, SOURCE.json and
+Select the exact commit approved for this installation trial. Verify its CI,
+independent source review and owner authorization before installation. Do not
+infer approval from a branch name or reuse evidence for a different commit. Read the CURRENT README.md, AGENTS.md, PROVENANCE.md, SOURCE.json and
 adapters/claude/README.md before executing anything. Verify the actual OS,
 Node version, claude version and available plugin/mod commands against those
 docs and their CLI help. The inherited compatibility baseline is Claude Code 2.1.289 (mods early access);
@@ -84,10 +84,11 @@ claude plugin --help
 These commands change configuration. Run them only after the preflight above, in a supported environment where you approve plugin installation. Keep the checkout at its installed path: hook commands refer to it. If the sibling adapter is already installed, first choose shared or isolated participation as described below; do not run `enable` until that scope is approved.
 
 ```sh
-git clone --branch release/runtime-plugin-agent-guides --single-branch https://github.com/Jeff-Kazzee/context-engine-claude.git
+git clone https://github.com/Jeff-Kazzee/context-engine-claude.git
 cd context-engine-claude
+# Replace APPROVED_COMMIT with the exact reviewed commit approved for this trial.
+git checkout --detach APPROVED_COMMIT
 git rev-parse HEAD
-# Verify this candidate head against the reviewed PR before proceeding.
 npm ci
 npm link
 context-engine-claude install
@@ -181,7 +182,7 @@ The managed ignore file and install-pointer deletion are flushed before success.
 | Missing/empty/invalid Working Context or refused reset | Read the visible restore receipt, then reread the latest file. Never force a reset past the gate. |
 | Install/uninstall fails | Preserve the output and byte backups; review runner/plugin help and partial changes. Do not overwrite unrelated config. |
 
-Interactive Claude Code behavior and real interactive hook loading after persistent installation remain **unverified**. The original source had scratch-home install round trips and request-level regressions; a split package does not inherit a new installation success claim. No live model evals are required by normal setup. Tests here use synthetic data and scratch runner homes. Warm, fully applied sessions reuse a validated recovery checkpoint; missing, stale or invalid checkpoints rebuild from the full Event Log. This is not a real long-session timeout or interactive performance acceptance claim.
+Interactive Claude Code behavior and real interactive hook loading after persistent installation remain **unverified**. The original source had scratch-home install round trips and request-level regressions; a split package does not inherit a new installation success claim. No live model evals are required by normal setup. Tests here use synthetic data and scratch runner homes. Warm, fully applied sessions reuse a validated recovery checkpoint; missing, stale or invalid checkpoints rebuild from the full Event Log. These checks do not establish bounded long-session functional acceptance or interactive delivery.
 
 The opt-in per-step mode is **EXPERIMENTAL: Full Replacement per model step**. It has hand-written tool schemas, a reduced system prompt, no streaming and a blind cost ledger. It is off by default. Its schema descriptions and adapter identity differ from the runner. Real per-step behavior after this wording change is unverified; do not reuse earlier wire-identical schema or request-level acceptance claims. Overflow on the compaction path falls back to native summarization and is labelled Compaction-only. Per-step overflow delegates that step to the host; it does not itself establish a compaction or label. Per-step cost logs retain accounting metadata and omit request/response payloads; they cannot prove next-request contents. The per-step mode uses Claude Code's opaque `$.session.authorize()` handle; the runner itself attaches credentials.
 
@@ -212,3 +213,11 @@ Runner event batches must be dense arrays of data events. The core checks the re
 Setup refuses recognized Cookie and Set-Cookie fields before copying configuration into backups. Uninstall verifies runner-home, watched-directory and config-file ownership before runner commands. Rollback uses verified parent descriptors for restore and created-file removal; it preserves redirected paths and concurrent edits. Recall, show and read still return evidence when an accounting flush is ambiguous, with accounting reported as skipped.
 
 Recovery and recall refuse complete Event Log records containing invalid UTF-8, malformed JSON or invalid runner-event structure. Show refuses malformed records encountered before the requested event. Complete malformed records are preserved for diagnosis, and refusal does not advance HEAD or replace the Working Context. An incomplete final record remains the separate torn-tail recovery case.
+
+Revision recovery verifies the replay boundary before repairing a torn log tail or replacing Working Context. New revisions persist a prepared record binding the revision, digest, parent, replay boundary and kind before publishing HEAD. A missing or mismatched required record is refused. Legacy revisions use available historical accounting. A legacy revision whose accounting was lost cannot supply the same independent boundary proof. Preserve refused state for diagnosis.
+
+Session ownership requires a positive safe-integer process ID before state creation. Handles opened for the same owner share one lock lifetime. Closing either releases that lock and invalidates the other handles, which must be reopened. A new lock generation prevents an old handle from acting after the same process reacquires ownership.
+
+The CLI reads JSON stdin in bounded chunks and refuses input above 64 MiB or invalid UTF-8 before parsing or opening a session. Setup finishes inventory and namespace checks before creating backup copies. A file that disappears during inventory is omitted rather than recorded as an empty file. If snapshot creation fails, setup removes only its own incomplete copies and empty snapshot directories.
+
+Record operation IDs are found through `operations.jsonl` beside the Event Log. It is bound to the log by device, inode and the byte offset it covers. A lookup scans only rows past that offset, and a hit must still match its own log row. A caller's row enters the index only after its append and flush succeed. A missing, damaged or disagreeing index is rebuilt from one full Event Log scan, so the first identified record on an older session can take as long as the full scan.

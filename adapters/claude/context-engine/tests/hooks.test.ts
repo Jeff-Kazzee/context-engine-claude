@@ -507,6 +507,19 @@ describe('budget', () => {
     expect(budgets).toEqual(['42000', '38000', '38000', '38000']);
   });
 
+  test('the budget debug log reports the largest observed turn input, not a count of turns', HOST_FIXTURE, async ($, on) => {
+    usage(on, [30_000, 49_000, 45_000, undefined]);
+    const delivered = [20_000, 21_000, 22_000, 23_000];
+    let n = 0;
+    const w = world(on, { core: (c) => (c === 'record' ? ok({ budget: report({ approxTokens: delivered[n++] }) }) : ok()) });
+    mock.env(on, {});
+    await start($);
+    for (let i = 0; i < 4; i++) await $.session.compact({ trigger: 'manual', messages: NATIVE_INPUT });
+    const budgetLogs = w.logs.filter((text) => text.includes('Working Context budget'));
+    // The adapter keeps only the running maximum: none at first, then 12,000 after the smaller 7,000 turn.
+    expect(budgetLogs.map((text) => /largest observed turn input (\w+)/.exec(text)?.[1])).toEqual(['none', '12000', '12000', '12000']);
+  });
+
   test('after a fallback the turn is measured on top of the summary that was delivered', HOST_FIXTURE, async ($, on) => {
     usage(on, [77_000, 40_000]);
     let first = true;
