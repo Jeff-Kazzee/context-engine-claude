@@ -23,7 +23,8 @@ function commitIndexLine(state:string,id:string,line:string,through:number){
   const headPath=join(state,'operations.json'),head=JSON.parse(fs.readFileSync(headPath,'utf8')),name=shardName(id),shard=join(state,name);
   const bytes=head.shards[name]?.bytes??0,committed=fs.existsSync(shard)?fs.readFileSync(shard).subarray(0,bytes):Buffer.alloc(0);
   fs.writeFileSync(shard,Buffer.concat([committed,Buffer.from(line)]),{mode:0o600});
-  head.shards[name]={bytes:bytes+Buffer.byteLength(line)};head.through=through;
+  const grown=Buffer.concat([committed,Buffer.from(line)]);
+  head.shards[name]={bytes:grown.length,sha:sha(grown.toString('utf8'))};head.through=through;
   fs.writeFileSync(headPath,JSON.stringify(head),{mode:0o600});
 }
 
