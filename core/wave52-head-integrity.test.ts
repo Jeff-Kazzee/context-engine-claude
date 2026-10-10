@@ -57,13 +57,14 @@ for (const missingAccounting of [false, true]) {
   });
 }
 
-for (const mutation of ['missing-witness', 'missing-marker', 'corrupt-with-torn-tail'] as const) {
+for (const mutation of ['missing-witness', 'missing-witness-with-torn-tail', 'missing-marker', 'corrupt-with-torn-tail'] as const) {
   test(`wave52: ${mutation} refuses before recovery mutates state`, () => {
     const f = committed();
     const head = JSON.parse(readFileSync(f.paths.head, 'utf8'));
-    if (mutation === 'missing-witness') {
+    if (mutation.startsWith('missing-witness')) {
       const rows = readFileSync(f.paths.events, 'utf8').trim().split('\n').filter(line => JSON.parse(line).type !== 'revision-prepared');
-      writeFileSync(f.paths.events, rows.join('\n') + '\n');
+      // HEAD stays valid, so only the boundary check refuses. It must run before the torn tail is cut.
+      writeFileSync(f.paths.events, rows.join('\n') + '\n' + (mutation === 'missing-witness' ? '' : '{"unfinished":'));
     } else {
       if (mutation === 'missing-marker') delete head.prepared;
       else { head.through = 0; appendFileSync(f.paths.events, '{"unfinished":'); }
