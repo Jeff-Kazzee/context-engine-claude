@@ -3,11 +3,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { tempDir } from '../core/testing.ts';
 import { killGroup, startSetup, waitForFile } from './testing/process.ts';
-import { world } from './testing/world.ts';
+import { world, type World } from './testing/world.ts';
 
 const SETTINGS = '{"theme": "dark",\n  "env": {"FOO": "1"}}\n';
 // Seeded registries: a fresh install and uninstall leaves absent ones behind as runner residue.
@@ -171,4 +171,82 @@ test('[LIFE-015] a kill after a guarded replacement is published names both left
   assert.notEqual(next.status, 0, next.stdout);
   for (const path of left) assert.ok(next.stderr.includes(path), `the refusal names ${path}:\n${next.stderr}`);
   assert.doesNotMatch(next.stderr, /unverified or linked file/, `the leftovers explain the refusal, not the link count:\n${next.stderr}`);
+});
+
+/** Runs uninstallLocked in a child process that the given fs patch kills. */
+function killedUninstall(w: World, patch: string): void {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const { uninstallLocked } = await import(${JSON.stringify(new URL('./install.ts', import.meta.url).href)});
+    const { claudeSpec, setupContext } = await import(${JSON.stringify(new URL('./runners.ts', import.meta.url).href)});
+    ${patch}
+    syncBuiltinESMExports();
+    const ctx = setupContext(process.env);
+    uninstallLocked(ctx, claudeSpec(ctx));
+  `], { env: { ...process.env, ...w.env }, encoding: 'utf8' });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+}
+const leftovers = (dir: string) => readdirSync(dir).filter((name) => name.startsWith('.context-engine-')).map((name) => join(dir, name));
+
+test('[LIFE-009] the refusal after a killed write gives the step that recovers each leftover', async () => {
+  // Published: settings.json already holds the restored bytes, so both leftovers go.
+  {
+    const w = world();
+    const settings = join(w.claudeHome, 'settings.json');
+    writeFileSync(settings, SETTINGS);
+    assert.equal(w.ce(['install']).status, 0);
+    killedUninstall(w, `const native = fs.linkSync; fs.linkSync = (from, to) => { native(from, to); if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); };`);
+    const next = w.ce(['uninstall']);
+    for (const path of leftovers(w.claudeHome)) {
+      assert.ok(next.stderr.includes(`Remove ${path}.`), `the refusal says to remove ${path}:\n${next.stderr}`);
+      rmSync(path);
+    }
+    const done = w.ce(['uninstall']);
+    assert.equal(done.status, 0, done.stdout + done.stderr);
+    assert.equal(read(settings), SETTINGS);
+  }
+  // Not yet published: settings.json exists only under the replacement candidate, which goes back.
+  {
+    const w = world();
+    const settings = join(w.claudeHome, 'settings.json');
+    writeFileSync(settings, SETTINGS);
+    assert.equal(w.ce(['install']).status, 0);
+    killedUninstall(w, `const native = fs.linkSync; fs.linkSync = (from, to) => { if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL'); return native(from, to); };`);
+    const next = w.ce(['uninstall']);
+    for (const path of leftovers(w.claudeHome)) {
+      if (basename(path).startsWith('.context-engine-replace-')) {
+        assert.ok(next.stderr.includes(`Move ${path} back to ${settings}.`), `the refusal says to move ${path} back:\n${next.stderr}`);
+        renameSync(path, settings);
+      } else {
+        assert.ok(next.stderr.includes(`Remove ${path}.`), `the refusal says to remove ${path}:\n${next.stderr}`);
+        rmSync(path);
+      }
+    }
+    const done = w.ce(['uninstall']);
+    assert.equal(done.status, 0, done.stdout + done.stderr);
+    assert.equal(read(settings), SETTINGS);
+  }
+  // A deletion moved known_marketplaces.json to its candidate during the undo of a killed install.
+  {
+    const w = world();
+    const settings = join(w.claudeHome, 'settings.json');
+    const known = join(w.claudeHome, 'plugins', 'known_marketplaces.json');
+    writeFileSync(settings, SETTINGS);
+    const pause = join(tempDir('pause'), 'plugin-install');
+    const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+    try { await waitForFile(pause); } finally { killGroup(install.pid); }
+    assert.equal((await install.done).signal, 'SIGKILL');
+    rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+    killedUninstall(w, `const native = fs.renameSync; fs.renameSync = (from, to) => { native(from, to); if (String(to).includes('.context-engine-delete-')) process.kill(process.pid, 'SIGKILL'); };`);
+    assert.equal(existsSync(known), false, 'the kill left known_marketplaces.json only under its candidate');
+    const [candidate] = leftovers(join(w.claudeHome, 'plugins'));
+    const next = w.ce(['uninstall']);
+    assert.ok(next.stderr.includes(`Move ${candidate} back to ${known}.`), `the refusal says to move ${candidate} back:\n${next.stderr}`);
+    renameSync(candidate!, known);
+    const done = w.ce(['uninstall']);
+    assert.equal(done.status, 0, done.stdout + done.stderr);
+    assert.equal(existsSync(known), false, 'the undo deletes the file that did not exist before install');
+    assert.equal(read(settings), SETTINGS);
+  }
 });
