@@ -107,6 +107,27 @@ test('[LIFE-015] a refused undo names the file, the record and the snapshot with
   }
 });
 
+test('[LIFE-015] a failed install still reports the undo of an interrupted one', async () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, SETTINGS);
+  const pause = join(tempDir('pause'), 'plugin-install');
+  const install = startSetup(['install'], { cwd: w.project, env: { ...w.env, FAKE_CLAUDE_PAUSE: pause } });
+  try { await waitForFile(pause); } finally { killGroup(install.pid); }
+  assert.equal((await install.done).signal, 'SIGKILL');
+  rmSync(join(w.stateDir, 'setup', 'claude.setup.lock'));
+  const pending = join(w.stateDir, 'setup', 'claude.pending.json');
+  const interrupted = join(JSON.parse(readFileSync(pending, 'utf8')).dir, 'before');
+
+  const failed = w.ce(['install'], { env: { FAKE_CLAUDE_FAIL: 'plugin install' } });
+  assert.notEqual(failed.status, 0, failed.stdout);
+  assert.match(failed.stderr, /plugin install .* failed/);
+  assert.ok(failed.stderr.includes('An earlier install was interrupted.'), `the failure reports the undo:\n${failed.stderr}`);
+  assert.ok(failed.stderr.includes(interrupted), `the failure names the interrupted install's backups ${interrupted}:\n${failed.stderr}`);
+  assert.equal(existsSync(pending), false, 'the undo finished');
+  assert.equal(read(settings), SETTINGS);
+});
+
 test('[LIFE-015] kill inside a guarded replacement never hides the live config', () => {
   const w = world();
   const settings = join(w.claudeHome, 'settings.json');
