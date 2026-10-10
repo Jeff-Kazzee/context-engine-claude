@@ -5,7 +5,7 @@ import { installedLedger, refuseInterruptedInstall } from './install.ts';
 import { claudeSpec, type SetupContext } from './runners.ts';
 export function enableProject(ctx: SetupContext, projectRoot: string): string[] {
   // A half-applied install could already be loaded by Claude, so enable changes nothing until it is undone.
-  refuseInterruptedInstall(ctx, claudeSpec(ctx));
+  refuseInterruptedInstall(ctx, claudeSpec(ctx), true);
   let ledger;
   try { ledger = installedLedger(ctx, 'claude'); }
   catch (e) {
