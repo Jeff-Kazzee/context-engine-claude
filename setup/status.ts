@@ -13,7 +13,8 @@ export function claudeModeLabel(env: NodeJS.ProcessEnv, home?: string): string {
   if (home) { try { const s = JSON.parse(safeRead(join(home, 'settings.json'))?.toString('utf8') ?? '{}'); const c=s?.pluginConfigs?.['context-engine@context-engine'] ?? s?.pluginConfigs?.['context-engine']; option = c?.options?.mode ?? c?.mode; } catch {} }
   return (perStepOn(env[MODE_ENV], option) ? PER_STEP_MODE : TURN_MODE).describe();
 }
-export function statusText(ctx: SetupContext, projectRoot: string) {
+/** `interrupted` names a setup lock and an interrupted install record that may belong to a running install. */
+export function statusText(ctx: SetupContext, projectRoot: string, interrupted: string | null = null) {
   const rootFd = openPrivateDirectory(dirname(ctx.setupDir));
   if (rootFd !== undefined) closeSync(rootFd);
   const p = participation({ projectRoot, stateDir: dirname(ctx.setupDir), env: ctx.env });
@@ -34,5 +35,5 @@ export function statusText(ctx: SetupContext, projectRoot: string) {
   } catch { /* Unreadable, malformed or linked config cannot establish activation. */ }
   const active = !!ledger && pluginsConfigured && p.active;
   const onPath = (ctx.env.PATH ?? '').split(delimiter).some(d => existsSync(join(d, 'context-engine-claude')));
-  return { lines: [`Context Engine Claude (checkout ${ctx.checkout})`, `Project: ${projectRoot}: ${p.state}`, `CLI on PATH: ${onPath}`, `Kill switch: ${killSwitchOn(ctx.env)}`, `Experiments: ${experiments.length ? experiments.join(', ') : 'none'}`, `Claude Code: ${ledger ? 'install record present' : 'not installed'}`, `Delivery Mode: ${label}`, active ? 'Configured active here; interactive hook loading is unverified.' : `inactive here (${!ledger ? 'not installed' : !pluginsConfigured ? 'both plugins must be installed, enabled and configured with usable core CLI paths in current Claude settings' : p.reason})`], json: { project: projectRoot, participation: p, experiments, killSwitch: killSwitchOn(ctx.env), claude: ledger ? { installed: ledger.at, mode: label, active, pluginsConfigured, liveLoadingVerified: false } : null } };
+  return { lines: [`Context Engine Claude (checkout ${ctx.checkout})`, `Project: ${projectRoot}: ${p.state}`, `CLI on PATH: ${onPath}`, `Kill switch: ${killSwitchOn(ctx.env)}`, `Experiments: ${experiments.length ? experiments.join(', ') : 'none'}`, `Claude Code: ${ledger ? 'install record present' : interrupted ?? 'not installed'}`, `Delivery Mode: ${label}`, active ? 'Configured active here; interactive hook loading is unverified.' : !ledger && interrupted ? 'Not verified here until that install finishes or is undone.' : `inactive here (${!ledger ? 'not installed' : !pluginsConfigured ? 'both plugins must be installed, enabled and configured with usable core CLI paths in current Claude settings' : p.reason})`], json: { project: projectRoot, participation: p, experiments, killSwitch: killSwitchOn(ctx.env), interruptedInstall: interrupted, claude: ledger ? { installed: ledger.at, mode: label, active, pluginsConfigured, liveLoadingVerified: false } : null } };
 }
