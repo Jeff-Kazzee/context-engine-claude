@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { acquireSetupLock } from './files.ts';
-import { installLocked as install, uninstallLocked as uninstall } from './install.ts';
+import { installedLedger, installLocked as install, uninstallLocked as uninstall } from './install.ts';
 import { disableProject, enableProject } from './project.ts';
 import { claudeSpec, type RunnerSpec, setupContext } from './runners.ts';
 import { claudeModeLabel, statusText } from './status.ts';
@@ -55,8 +55,10 @@ export async function runSetup(argv: string[]): Promise<number> {
 
             out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Inert until `context-engine-claude enable` in a project (the pilot is opt-in).']);
           } else {
+            // Without an install record, a successful uninstall only undid an interrupted install.
+            const installed = !!installedLedger(ctx, spec.id, spec);
             const lines = uninstall(ctx, spec);
-            out([`${spec.title}: uninstalled.`, ...lines.map((l) => `  ${l}`)]);
+            out([installed ? `${spec.title}: uninstalled.` : `${spec.title}: not installed. The interrupted install was rolled back.`, ...lines.map((l) => `  ${l}`)]);
           }
         } catch (e) {
           process.stderr.write(refusal(e));
