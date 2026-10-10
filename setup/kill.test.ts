@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '../core/testing.ts';
 import { killGroup, startSetup, waitForFile } from './testing/process.ts';
@@ -139,4 +139,36 @@ test('[LIFE-015] kill inside a guarded replacement never hides the live config',
   const now = read(settings);
   if (now !== null && [SETTINGS, preRevert].includes(now)) return;
   assert.ok(`${next.stdout}${next.stderr}`.includes(candidate), `the next run names the candidate. It said:\n${next.stdout}${next.stderr}\nsettings.json is now ${JSON.stringify(now)}`);
+});
+
+test('[LIFE-015] a kill after a guarded replacement is published names both leftovers', () => {
+  const w = world();
+  const settings = join(w.claudeHome, 'settings.json');
+  writeFileSync(settings, SETTINGS);
+  assert.equal(w.ce(['install']).status, 0);
+
+  // A child uninstall is killed right after the restored bytes are linked into place, before the temporary name is removed.
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const { uninstallLocked } = await import(${JSON.stringify(new URL('./install.ts', import.meta.url).href)});
+    const { claudeSpec, setupContext } = await import(${JSON.stringify(new URL('./runners.ts', import.meta.url).href)});
+    const native = fs.linkSync;
+    fs.linkSync = (from, to) => {
+      native(from, to);
+      if (String(from).includes('.context-engine-setup-') && String(to).endsWith('/settings.json')) process.kill(process.pid, 'SIGKILL');
+    };
+    syncBuiltinESMExports();
+    const ctx = setupContext(process.env);
+    uninstallLocked(ctx, claudeSpec(ctx));
+  `], { env: { ...process.env, ...w.env }, encoding: 'utf8' });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  const left = readdirSync(w.claudeHome).filter((name) => name.startsWith('.context-engine-')).map((name) => join(w.claudeHome, name));
+  assert.equal(left.length, 2, `the kill left a temporary copy and a replacement candidate: ${left.join(', ')}`);
+  assert.equal(lstatSync(settings).nlink, 2, 'settings.json shares its inode with the temporary copy');
+
+  const next = w.ce(['uninstall']);
+  assert.notEqual(next.status, 0, next.stdout);
+  for (const path of left) assert.ok(next.stderr.includes(path), `the refusal names ${path}:\n${next.stderr}`);
+  assert.doesNotMatch(next.stderr, /unverified or linked file/, `the leftovers explain the refusal, not the link count:\n${next.stderr}`);
 });
