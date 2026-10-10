@@ -4,9 +4,9 @@ import { killSwitchOn, participation } from '../core/index.ts';
 import { TURN_MODE, PER_STEP_MODE, coreArgv } from '../adapters/claude/context-engine/hooks/adapter.ts';
 import { MODE_ENV, perStepOn } from '../adapters/claude/context-engine/hooks/per-step.ts';
 import { openPrivateDirectory } from '../core/store.ts';
-import { installedLedger, refuseInterruptedInstall } from './install.ts';
+import { installedLedger } from './install.ts';
 import type { SetupContext } from './runners.ts';
-import { CLAUDE_PLUGIN_IDS, claudeSpec } from './runners.ts';
+import { CLAUDE_PLUGIN_IDS } from './runners.ts';
 import { safeRead } from './files.ts';
 export function claudeModeLabel(env: NodeJS.ProcessEnv, home?: string): string {
   let option: unknown;
@@ -16,9 +16,6 @@ export function claudeModeLabel(env: NodeJS.ProcessEnv, home?: string): string {
 export function statusText(ctx: SetupContext, projectRoot: string) {
   const rootFd = openPrivateDirectory(dirname(ctx.setupDir));
   if (rootFd !== undefined) closeSync(rootFd);
-  // "Not installed" would hide a half-applied install, so status refuses until it is undone. Status
-  // takes no lock. A live install holds the lock and its own record, so status checks the record only without a lock.
-  if (!existsSync(join(ctx.setupDir, 'claude.setup.lock'))) refuseInterruptedInstall(ctx, claudeSpec(ctx));
   const p = participation({ projectRoot, stateDir: dirname(ctx.setupDir), env: ctx.env });
   const ledger = installedLedger(ctx, 'claude');
   const experiments=(ctx.env.CONTEXT_ENGINE_EXPERIMENTS ?? '').split(',').map(v=>v.trim()).filter(v=>v==='stale-refs');
