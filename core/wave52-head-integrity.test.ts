@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { openSession } from './index.ts';
 import { layout, sha } from './store.ts';
 import { join } from 'node:path';
@@ -73,6 +73,27 @@ for (const mutation of ['missing-witness', 'missing-witness-with-torn-tail', 'mi
     const paths = [f.paths.head, f.paths.events, f.paths.workingContext];
     const before = paths.map(path => readFileSync(path));
     assert.throws(() => openSession(f.opts), /HEAD|accounting/);
+    paths.forEach((path, index) => assert.deepEqual(readFileSync(path), before[index]));
+    assert.equal(readLock(f.paths.lock), null);
+  });
+}
+
+for (const field of ['through', 'prepared'] as const) {
+  test(`wave52: committed revision accounting with a conflicting ${field} refuses recovery`, () => {
+    const f = committed();
+    const head = JSON.parse(readFileSync(f.paths.head, 'utf8'));
+    // HEAD and its prepared witness stay valid. Only the final accounting row disagrees.
+    const rows = readFileSync(f.paths.events, 'utf8').trim().split('\n').map(line => {
+      const row = JSON.parse(line);
+      if (row.type === 'revision' && row.rev === head.rev) row[field] = field === 'through' ? head.through + 1 : sha('conflicting prepared identity');
+      return JSON.stringify(row);
+    });
+    writeFileSync(f.paths.events, rows.join('\n') + '\n');
+    // The edit can keep the log size, so drop the checkpoint that would skip log validation.
+    rmSync(join(f.paths.stateDir, 'recovery.json'), { force: true });
+    const paths = [f.paths.head, f.paths.events, f.paths.workingContext];
+    const before = paths.map(path => readFileSync(path));
+    assert.throws(() => openSession(f.opts), new RegExp(`committed revision accounting ${field === 'through' ? 'through' : 'identity'} conflicts with HEAD`));
     paths.forEach((path, index) => assert.deepEqual(readFileSync(path), before[index]));
     assert.equal(readLock(f.paths.lock), null);
   });
