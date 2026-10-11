@@ -6,6 +6,7 @@ import { cpSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } 
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { resolveStateRoot } from '../core/store.ts';
 import type { Rule } from './ledger.ts';
 import { jsonRule, tomlTablesRule } from './rules.ts';
@@ -59,6 +60,15 @@ export function claudeSpec(ctx: SetupContext): RunnerSpec {
   const settings = join(h, 'settings.json');
   const installed = join(h, 'plugins', 'installed_plugins.json');
   const known = join(h, 'plugins', 'known_marketplaces.json');
+  // The exact values this install writes, so a file without its before copy loses only those.
+  const marketplace = join(ctx.checkout, 'adapters', 'claude');
+  const source = { source: 'directory', path: marketplace };
+  const cache = join(h, 'plugins', 'cache', MARKETPLACE);
+  const options = () => ({ options: { coreCli: realpathSync(join(ctx.checkout, 'core', 'cli.ts')) } });
+  const registered = (name: string) => (value: unknown) => {
+    const entry = Array.isArray(value) && value.length === 1 ? value[0] as Record<string, unknown> : undefined;
+    return !!entry && typeof entry.version === 'string' && isDeepStrictEqual(entry, { scope: 'user', installPath: join(cache, name, entry.version), version: entry.version });
+  };
   return {
     id: 'claude',
     title: 'Claude Code',
@@ -68,9 +78,12 @@ export function claudeSpec(ctx: SetupContext): RunnerSpec {
     watch: [join(h, 'plugins'), join(h, 'backups')],
     namespaced: [join(h, 'plugins', 'cache', MARKETPLACE), ...CLAUDE_PLUGIN_IDS.map((id) => join(h, 'plugins', 'data', id.replace('@', '-')))],
     rules: {
-      [settings]: jsonRule([...CLAUDE_PLUGIN_IDS.map((id) => ['enabledPlugins', id]), ['extraKnownMarketplaces', MARKETPLACE], ...CLAUDE_PLUGIN_IDS.map((id) => ['pluginConfigs', id])]),
-      [installed]: jsonRule(CLAUDE_PLUGIN_IDS.map((id) => ['plugins', id])),
-      [known]: jsonRule([[MARKETPLACE]]),
+      [settings]: jsonRule(
+        [...CLAUDE_PLUGIN_IDS.map((id) => ['enabledPlugins', id]), ['extraKnownMarketplaces', MARKETPLACE], ...CLAUDE_PLUGIN_IDS.map((id) => ['pluginConfigs', id])],
+        [...CLAUDE_PLUGIN_IDS.map(() => (v: unknown) => v === true), (v) => isDeepStrictEqual(v, { source }), ...CLAUDE_PLUGIN_IDS.map(() => (v: unknown) => isDeepStrictEqual(v, options()))],
+      ),
+      [installed]: jsonRule(CLAUDE_PLUGIN_IDS.map((id) => ['plugins', id]), CLAUDE_PLUGIN_IDS.map((id) => registered(id.split('@')[0]!))),
+      [known]: jsonRule([[MARKETPLACE]], [(v) => isDeepStrictEqual(v, { source, installLocation: marketplace })]),
     },
     install: [['plugin', 'marketplace', 'add', join(ctx.checkout, 'adapters', 'claude')], ...CLAUDE_PLUGIN_IDS.map((id) => ['plugin', 'install', id, '--config', `coreCli=${realpathSync(join(ctx.checkout, 'core', 'cli.ts'))}`])],
     uninstall: [...[...CLAUDE_PLUGIN_IDS].reverse().map((id) => ['plugin', 'uninstall', id]), ['plugin', 'marketplace', 'remove', MARKETPLACE]],
