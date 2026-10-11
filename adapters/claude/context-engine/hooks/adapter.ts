@@ -20,7 +20,7 @@ export const RUNNER = 'claude-code';
  */
 export const HARD_LIMIT_CHARS = 600_000;
 
-export type CoreCommand = 'open' | 'sync' | 'record' | 'native-compaction' | 'close' | 'status';
+export type CoreCommand = 'open' | 'sync' | 'record' | 'native-compaction' | 'close' | 'status' | 'ack-restores';
 
 /** Resolves `..` and `.` segments of an absolute POSIX path (the hooks module has no node:path). */
 function normalize(path: string): string {
@@ -38,7 +38,7 @@ function normalize(path: string): string {
  * passes --if-enabled: in a project nobody enabled, or with the kill switch CONTEXT_ENGINE=off, the
  * core does nothing and says so (CoreError.inactive).
  */
-export function coreArgv(pluginRoot: string, command: CoreCommand, at: { sessionId: string; projectRoot: string }, budgetTokens?: number, deliveryMaxBytes?: number, coreCli?: unknown): string[] {
+export function coreArgv(pluginRoot: string, command: CoreCommand, at: { sessionId: string; projectRoot: string }, budgetTokens?: number, deliveryMaxBytes?: number, coreCli?: unknown, noticeIds?: readonly string[], ownerGeneration?: string): string[] {
   const cli = coreCli === undefined || coreCli === 'checkout-relative' ? normalize(`${pluginRoot}/../../../core/cli.ts`) : coreCli;
   if (typeof cli !== 'string' || !cli.startsWith('/') || normalize(cli) !== cli
       || /[\u0000-\u001F\u007F]/.test(cli) || !cli.endsWith('/core/cli.ts')) {
@@ -57,7 +57,10 @@ export function coreArgv(pluginRoot: string, command: CoreCommand, at: { session
     '--hard-limit',
     String(HARD_LIMIT_CHARS),
     '--if-enabled',
+    '--defer-restore-ack',
   ];
+  if (noticeIds?.length) argv.push('--notice-ids', noticeIds.join(','));
+  if (ownerGeneration) argv.push('--owner-generation', ownerGeneration);
   if (budgetTokens) argv.push('--budget', String(budgetTokens));
   if (deliveryMaxBytes !== undefined) argv.push('--delivery-max-bytes', String(deliveryMaxBytes));
   return argv;
@@ -161,7 +164,7 @@ export type CoreDelivery = {
 } | {
   kind: 'not-ready'; revision: number; sha256: string; chars: number; bytes: number; reason: string;
 };
-export type CoreReply = { ok: true; revision: number; revisionKind?: string; chars: number; workingContext: string; workingContextText?: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string; delivery?: CoreDelivery };
+export type CoreReply = { ok: true; revision: number; revisionKind?: string; chars: number; workingContext: string; workingContextText?: string; receipt?: Receipt; budget?: BudgetReport; closed?: boolean; frameKey?: string; delivery?: CoreDelivery; restoreNotices?: Array<{ id: string; text: string }>; restoreNoticesTotal?: number; restoreNoticeSummary?: string; sessionGeneration?: string };
 
 export const WITHIN_TURN_MAX_BYTES = 32_000;
 
@@ -221,7 +224,10 @@ export function parseCoreReply(r: { exitCode: number; stdout: string; stderr: st
     reply = undefined;
   }
   if (r.exitCode === 0 && reply?.ok === true && reply.active === false) throw new CoreError(`Context Engine is inactive: ${String(reply.reason)}`, { inactive: true });
-  if (r.exitCode === 0 && reply?.ok === true) return reply as unknown as CoreReply;
+  if (r.exitCode === 0 && reply?.ok === true) {
+    if (reply.restoreNotices !== undefined && (typeof reply.sessionGeneration !== 'string' || !/^[a-f0-9]{32}$/.test(reply.sessionGeneration) || typeof reply.restoreNoticeSummary !== 'string' || !Number.isSafeInteger(reply.restoreNoticesTotal) || !Array.isArray(reply.restoreNotices) || reply.restoreNotices.length > 64 || Number(reply.restoreNoticesTotal) < reply.restoreNotices.length || reply.restoreNotices.some(n => !n || typeof n.id !== 'string' || !/^[a-f0-9]{32}$/.test(n.id) || typeof n.text !== 'string'))) throw new CoreError('invalid durable restore notice reply');
+    return reply as unknown as CoreReply;
+  }
   const cause = typeof reply?.error === 'string' ? reply.error : r.stderr.trim() || r.stdout.trim() || `exit ${r.exitCode}`;
   if (reply?.error === 'refused') throw new CoreError(`context-engine refused: session is held by ${JSON.stringify(reply.holder)}`, { refused: true });
   throw new CoreError(`context-engine failed (exit ${r.exitCode}): ${cause.slice(0, 500)}`);

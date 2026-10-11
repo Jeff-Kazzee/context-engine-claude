@@ -10,19 +10,20 @@ import { parseArgs } from 'node:util';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
-function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string; missingFrameKey?: boolean; refusedRecord?: boolean; sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
+function fixture(messages: adapter.ApiMessage[] = [], opts: { restoreNotices?: boolean; failAck?: boolean; response?: string; missingFrameKey?: boolean; refusedRecord?: boolean; sessionId?: string; nativeOverBudget?: boolean; mode?: string; file?: string; budget?: string; inactive?: boolean; failClose?: boolean; revision?: number; syncRevision?: number; failSync?: boolean; restored?: boolean; recordSuccess?: boolean; recordChars?: number; onCommand?: (command: string) => void; onSnapshot?: () => void; onAuthorize?: () => void; noAuth?: boolean; failNative?: boolean; failSnapshot?: boolean; failAuthorize?: boolean; onNative?: () => Promise<void> } = {}) {
   const source = readFileSync(new URL('../context-engine/hooks/register.ts', import.meta.url), 'utf8');
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export const register', 'const register');
   const load = new Function('adapterModule', 'stepModule', `const {${Object.keys(adapter).join(',')}} = adapterModule; const {${Object.keys(perStep).filter(k => !(k in adapter)).join(',')}} = stepModule; ${erased}; return register;`);
   const handlers = new Map<string, (...args: any[]) => any>();
   load(adapter, perStep)((name: string, ...args: any[]) => handlers.set(name, args.at(-1)), {});
   let nativeCalls = 0;
+  const requests: any[] = [];
   const calls: string[] = [];
   const argvCalls: string[][] = [];
   const logs: string[] = [];
   const statuses: Array<string | undefined> = [];
   const $ = {
-    http: {fetch: async (_url: string, init: any) => { assert.equal(init.auth,'synthetic-opaque-handle'); return {status:200,text:opts.response}; }},
+    http: {fetch: async (_url: string, init: any) => { requests.push(JSON.parse(init.body)); assert.equal(init.auth,'synthetic-opaque-handle'); return {status:200,text:opts.response}; }},
     plugin: { root: '/checkout/adapters/claude/context-engine' },
     session: { id: async () => opts.sessionId ?? 'S1', root: async () => '/proj', usage: async () => ({}), messages: async () => messages, authorize: async () => { opts.onAuthorize?.(); if (opts.failAuthorize) throw new Error('synthetic authorization fault'); if (opts.noAuth) return null; if (opts.response !== undefined) return {handle:'synthetic-opaque-handle',kind:'bearer'}; throw new Error('unexpected authorization'); } },
     env: { get: async (key: string) => key === 'CONTEXT_ENGINE_CLAUDE_MODE' ? opts.mode : key === 'CONTEXT_ENGINE_BUDGET_TOKENS' ? opts.budget : undefined },
@@ -31,6 +32,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
     fs: { read: async () => { throw new Error('live Working Context reread is forbidden in this fixture'); } },
     process: { run: async (argv: string[]) => {
       const command = argv[2]!; calls.push(command); argvCalls.push(argv); opts.onCommand?.(command);
+      if (command === 'ack-restores' && opts.failAck) throw new Error('synthetic restore ack failure');
       if (command === 'sync' && opts.failSync) throw new Error('synthetic observation failure');
       if (command === 'close' && opts.failClose) throw new Error('injected close failure');
       if ((command === 'record' || command === 'sync') && opts.inactive) return { exitCode: 0, stdout: '{"ok":true,"active":false,"reason":"disabled"}', stderr: '' };
@@ -38,7 +40,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
       if(command==='record' && opts.refusedRecord)return {exitCode:2,stdout:'{"ok":false,"error":"refused"}',stderr:''};
       return command === 'record' && !opts.recordSuccess
         ? { exitCode: 1, stdout: '{"ok":false,"error":"injected record failure"}', stderr: '' }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, budget: command === 'native-compaction' && opts.nativeOverBudget ? {overBudget:true,approxTokens:4,budgetTokens:1,text:'SYNTHETIC_OVER_BUDGET'} : undefined, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: opts.missingFrameKey ? undefined : '00112233445566778899aabbccddeeff' }), stderr: '' };
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, sessionGeneration: 'b'.repeat(32), restoreNoticesTotal: opts.restoreNotices ? 1 : undefined, restoreNoticeSummary: opts.restoreNotices ? 'SYNTHETIC_OWED_RESTORE read the current Working Context file' : undefined, restoreNotices: opts.restoreNotices && command !== 'ack-restores' ? [{ id: 'a'.repeat(32), text: 'SYNTHETIC_OWED_RESTORE read the current Working Context file' }] : undefined, budget: command === 'native-compaction' && opts.nativeOverBudget ? {overBudget:true,approxTokens:4,budgetTokens:1,text:'SYNTHETIC_OVER_BUDGET'} : undefined, workingContextText: opts.failSnapshot ? undefined : snapshot, revision: command === 'sync' ? opts.syncRevision ?? opts.revision ?? 1 : opts.revision ?? 1, receipt: command === 'sync' && opts.restored ? { kind: 'restored', revision: 1, chars: 15, approxTokens: 4, text: 'synthetic restored receipt' } : undefined, chars: command === 'record' ? opts.recordChars ?? 15 : 15, workingContext: '/proj/.context-engine/S1/context.md', frameKey: opts.missingFrameKey ? undefined : '00112233445566778899aabbccddeeff' }), stderr: '' };
     } },
   };
   const compact = (trigger: string) => handlers.get('session.compact')!($, { trigger, messages: [] }, async () => { nativeCalls++; if (opts.failNative) throw new Error('synthetic native failure'); return { messages: [{ role: 'user', text: 'native summary' }] }; });
@@ -50,7 +52,7 @@ function fixture(messages: adapter.ApiMessage[] = [], opts: { response?: string;
     const stream = handlers.get('turn.step')!($, { model: 'synthetic', turnId: 't', index: 1 }, async function* () { nativeCalls++; await opts.onNative?.(); return {}; });
     for await (const _ of stream) { /* No real model is called. */ }
   };
-  return { $, handlers, compact, tool, append, end, step, calls, argvCalls, logs, statuses, nativeCalls: () => nativeCalls };
+  return { $, handlers, compact, tool, append, end, step, requests, calls, argvCalls, logs, statuses, nativeCalls: () => nativeCalls };
 }
 
 /** The host's Read record for the whole Working Context holding the fixture's committed snapshot. */
@@ -387,4 +389,45 @@ test('wave29: refused empty-tail record native fallback stands aside before the 
  assert.equal((await w.compact('manual')).messages[0].text,'native summary');
  messages.push({role:'user',content:[{type:'text',text:'native summary'}]});
  assert.match((await w.compact('plugin')).skip,/inactive/);assert.equal(w.calls.filter(c=>c==='record').length,1);assert.equal(w.calls.filter(c=>c==='close').length,1);
+});
+
+test('issue31: pending old restore reoffers across compact calls without false Bash refusal', async () => {
+  const messages: adapter.ApiMessage[] = [], w = fixture(messages, { recordSuccess: true, restoreNotices: true });
+  assert.match(JSON.stringify(await w.compact('plugin')), /SYNTHETIC_OWED_RESTORE/);
+  messages.push(shellRow);
+  assert.match(JSON.stringify(await w.compact('plugin')), /SYNTHETIC_OWED_RESTORE/);
+  assert.equal(w.calls.filter(c => c === 'record').length, 2);
+  assert.equal(w.calls.includes('ack-restores'), false);
+  assert.equal(w.calls.includes('close'), false);
+  await w.end();
+  const resumed = fixture([], { recordSuccess: true, restoreNotices: true });
+  assert.match(JSON.stringify(await resumed.compact('plugin')), /SYNTHETIC_OWED_RESTORE/);
+  assert.equal(resumed.calls.includes('ack-restores'), false);
+});
+
+test('issue31: tool return carriers reoffer and never acknowledge restore IDs', async () => {
+  const w = fixture([], { recordSuccess: true, restoreNotices: true });
+  await w.compact('plugin');
+  for (let i = 0; i < 2; i++) {
+    const out = await w.tool({ tool: 'Bash', command: 'synthetic ordinary command' }, { result: 'TOOL_BYTES' });
+    assert.equal(out.result, 'TOOL_BYTES');
+    assert.match(JSON.stringify(out.context), /SYNTHETIC_OWED_RESTORE/);
+  }
+  assert.equal(w.calls.includes('ack-restores'), false);
+  assert.ok(w.argvCalls.filter(argv => ['open','sync','record'].includes(argv[2]!)).every(argv => argv.includes('--defer-restore-ack')));
+});
+
+for (const failure of [false, true]) test(`issue31: per-step confirms only successful request transport (${failure})`, async () => {
+  const w = fixture([], { restoreNotices: true, mode: 'per-step', response: JSON.stringify(failure ? { error: 'SYNTHETIC_REQUEST_FAILURE' } : { content: [{ type: 'text', text: 'SAFE_RESPONSE' }], stop_reason: 'end_turn' }) });
+  await w.step();
+  assert.match(JSON.stringify(w.requests), /SYNTHETIC_OWED_RESTORE/);
+  assert.equal(w.calls.includes('ack-restores'), !failure);
+  if (!failure) assert.ok(w.argvCalls.find(argv => argv[2] === 'ack-restores')!.includes('a'.repeat(32)));
+});
+
+test('issue31: successful request with failed ack preserves its delivered result', async () => {
+  const w = fixture([], { restoreNotices: true, failAck: true, mode: 'per-step', response: '{"content":[{"type":"text","text":"SAFE_RESPONSE"}]}' });
+  await w.step();
+  assert.equal(w.nativeCalls(), 0);
+  assert.match(w.logs.join(' '), /confirmation failed.*repeat/);
 });

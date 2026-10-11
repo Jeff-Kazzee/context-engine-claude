@@ -174,7 +174,7 @@ test('the core is called as node on the checkout\'s core/cli.ts, found from the 
   assert.equal(argv[0], 'node');
   assert.equal(argv[1], fileURLToPath(new URL('../../../core/cli.ts', import.meta.url)));
   assert.ok(existsSync(argv[1]!));
-  assert.deepEqual(argv.slice(2), ['open', '--session', 'S1', '--project', '/proj', '--runner', 'claude-code', '--hard-limit', String(HARD_LIMIT_CHARS), '--if-enabled']);
+  assert.deepEqual(argv.slice(2), ['open', '--session', 'S1', '--project', '/proj', '--runner', 'claude-code', '--hard-limit', String(HARD_LIMIT_CHARS), '--if-enabled', '--defer-restore-ack']);
 });
 
 test('core replies: ok JSON is returned, anything else is an error naming the cause', () => {
@@ -404,7 +404,7 @@ test('through the real core: a Working Context that fits the old budget but not 
 
 test('the core is passed the budget when there is one', () => {
   const argv = coreArgv('/x/adapters/claude/context-engine', 'record', { sessionId: 'S1', projectRoot: '/proj' }, 51_000);
-  assert.deepEqual(argv.slice(-3), ['--if-enabled', '--budget', '51000']);
+  assert.deepEqual(argv.slice(-4), ['--if-enabled', '--defer-restore-ack', '--budget', '51000']);
   assert.ok(!coreArgv('/x/adapters/claude/context-engine', 'record', { sessionId: 'S1', projectRoot: '/proj' }).includes('--budget'));
 });
 

@@ -141,9 +141,9 @@ function log($: EngineInterface, text: string, to: 'transcript' | 'debug' = 'tra
   $.ui.log(text.startsWith('Context Engine') ? text : `Context Engine: ${text}`, { to });
 }
 
-function core($: EngineInterface, at: Opened, command: CoreCommand, stdin?: string, budgetTokens?: number, deliveryMaxBytes?: number): Promise<CoreReply> {
+function core($: EngineInterface, at: Opened, command: CoreCommand, stdin?: string, budgetTokens?: number, deliveryMaxBytes?: number, noticeIds?: readonly string[], ownerGeneration?: string): Promise<CoreReply> {
   const call = queue.then(async () =>
-    parseCoreReply(await $.process.run(coreArgv($.plugin.root, command, at, budgetTokens, deliveryMaxBytes, coreCliOption), { cwd: at.projectRoot, stdin, timeoutMs: 60_000 })),
+    parseCoreReply(await $.process.run(coreArgv($.plugin.root, command, at, budgetTokens, deliveryMaxBytes, coreCliOption, noticeIds, ownerGeneration), { cwd: at.projectRoot, stdin, timeoutMs: 60_000 })),
   );
   queue = call.catch(() => undefined);
   return call;
@@ -313,12 +313,12 @@ async function buildStep($: EngineInterface, at: Opened, e: TurnStepInput): Prom
     wcPath: reply.workingContext,
     frameKey: at.frameKey,
     fileText: String(fileText),
-    notices: reply.receipt ? [reply.receipt.text] : [],
+    notices: [...(reply.receipt ? [reply.receipt.text] : []), ...(reply.restoreNoticeSummary ? [reply.restoreNoticeSummary] : [])],
     sections: composed.sections,
     ownSection: own,
     tools,
   });
-  return { body, revision: reply.revision, deliveredTokens: Math.ceil(String(fileText).length / 4) };
+  return { body, restoreGeneration: reply.sessionGeneration, restoreNoticeIds: (reply.restoreNotices ?? []).map(n => n.id), revision: reply.revision, deliveredTokens: Math.ceil(String(fileText).length / 4) };
 }
 
 /** Sends the step on the session's own auth handle (Claude Code resolves it; the mod never sees a credential). */
@@ -419,6 +419,11 @@ export const register: Register = (on, options) => {
         log($, `per-step request failed (${failure}), so Claude Code sends this step itself`);
         releaseLease(); return yield* next(e);
       }
+      // Only the successful request transport can confirm these carried IDs.
+      if (built.restoreNoticeIds.length) {
+        try { await core($, at, 'ack-restores', undefined, undefined, undefined, built.restoreNoticeIds, built.restoreGeneration); }
+        catch (err) { log($, `restore notice confirmation failed, so it may repeat (${message(err)})`); }
+      }
       delivered = built.deliveredTokens;
       lastDeliveredRevision = built.revision;
       const { chunks, result } = stepChunks(response, e);
@@ -490,11 +495,11 @@ export const register: Register = (on, options) => {
         lastDeliveredRevision = replaced.revision;
         framedText = fileText;
         log($, notice);
-        const notices = [notice, ...(replaced.budget ? [replaced.budget.text] : [])];
+        const notices = [notice, ...(replaced.restoreNoticeSummary ? [replaced.restoreNoticeSummary] : []), ...(replaced.budget ? [replaced.budget.text] : [])];
         return { messages: [{ role: 'user', text: compactionText(replaced.workingContext, fileText, notices, COMPACTION_ONLY_FALLBACK.label, at.frameKey), toolUses: [] }] };
       }
       const fileText = committedText(reply);
-      const notices = [...(reply.receipt ? [reply.receipt.text] : []), ...(reply.budget ? [reply.budget.text] : [])];
+      const notices = [...(reply.receipt ? [reply.receipt.text] : []), ...(reply.restoreNoticeSummary ? [reply.restoreNoticeSummary] : []), ...(reply.budget ? [reply.budget.text] : [])];
       assertNoActiveTools();
       delivered = reply.budget?.approxTokens;
       lastDeliveredRevision = reply.revision;
@@ -604,10 +609,17 @@ export const register: Register = (on, options) => {
       if (room?.exhausted) return result;
       const reply = await core($, at, 'sync', undefined, room?.budgetTokens, WITHIN_TURN_MAX_BYTES);
       const fresh = withinTurnReadNotice(reply, lastNotifiedRevision, at.sessionId, coreArgv($.plugin.root, 'sync', at, undefined, undefined, coreCliOption)[1]!);
-      // Core receipts are already acknowledged. Retain only validated static metadata for a later carrier.
+      // Restore notices remain owed because returning tool context proves no host retention.
+      // Retain only static metadata, never editable Working Context bytes.
       if (fresh) pendingReadNotice = fresh;
       else if (pendingReadNotice && (reply.revision !== pendingReadNotice.revision
           || reply.delivery?.sha256 !== pendingReadNotice.sha256)) pendingReadNotice = null;
+      const restoreTexts = reply.restoreNoticeSummary ? [reply.restoreNoticeSummary] : [];
+      if (restoreTexts.length) {
+        const prior = result.context ?? [];
+        if ([...prior, ...restoreTexts].reduce((size, text) => size + text.length, 0) <= 190_000) result = { ...result, context: [...prior, ...restoreTexts] };
+        else log($, 'Restore notices remain pending because this tool carrier has no room.');
+      }
       const data = pendingReadNotice;
       if (!data) {
         pendingWithinTurnEdit = false;
