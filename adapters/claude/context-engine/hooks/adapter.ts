@@ -97,7 +97,7 @@ export type WorkingContextBudget = {
   pinnedTokens: number;
   /** Room kept for the current turn's own input: the largest observed this session, at least the floor. */
   reserveTokens: number;
-  /** The turn inputs observed this session, this compaction's included: what the next call is given. */
+  /** The largest observed turn input, or an empty array before the first observation. */
   observed: number[];
   source: 'CONTEXT_ENGINE_BUDGET_TOKENS' | 'auto-compact threshold' | 'compaction window';
   /**
@@ -139,9 +139,14 @@ export function workingContextBudget(input: { breakdown: ContextBreakdown | null
   const source = env !== undefined && sharedTokens === env ? 'CONTEXT_ENGINE_BUDGET_TOKENS' : threshold !== undefined ? 'auto-compact threshold' : 'compaction window';
   const pinnedTokens = b ? b.categories.filter((c) => c.kind === 'used' && !/^messages$/i.test(c.name.trim())).reduce((a, c) => a + c.tokens, 0) : DEFAULT_PINNED_TOKENS;
   const t = input.turn;
-  const observed = [...(t?.observed ?? [])];
-  if (t?.contextTokens !== undefined && t.deliveredTokens !== undefined) observed.push(Math.max(0, t.contextTokens - pinnedTokens - t.deliveredTokens));
-  const reserveTokens = Math.max(TURN_RESERVE_FLOOR_TOKENS, ...observed);
+  let largest: number | undefined;
+  for (const value of t?.observed ?? []) largest = largest === undefined ? value : Math.max(largest, value);
+  if (t?.contextTokens !== undefined && t.deliveredTokens !== undefined) {
+    const current = Math.max(0, t.contextTokens - pinnedTokens - t.deliveredTokens);
+    largest = largest === undefined ? current : Math.max(largest, current);
+  }
+  const observed = largest === undefined ? [] : [largest];
+  const reserveTokens = Math.max(TURN_RESERVE_FLOOR_TOKENS, largest ?? 0);
   const budgetTokens = sharedTokens - pinnedTokens - reserveTokens;
   const budget: WorkingContextBudget = { budgetTokens, sharedTokens, pinnedTokens, reserveTokens, observed, source };
   return budgetTokens > 0 ? budget : { ...budget, exhausted: true };
