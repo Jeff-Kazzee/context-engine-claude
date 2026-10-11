@@ -20,7 +20,8 @@
 //   own summarizer (`next`), its result becomes the next Revision (core `native-compaction`), and the
 //   frame, the transcript log, the Event Log and the status line label it Compaction-only.
 // - tool.call + session.append stub the echo of the agent's own Read of the file, which would
-//   otherwise repeat the whole Working Context inside the turn.
+//   otherwise repeat the whole Working Context inside the turn. Only a Read that returned the whole
+//   text of the last compaction frame this process placed in the conversation is stubbed.
 // - Participation: every core call passes --if-enabled. In a project nobody enabled (the pilot is
 //   opt-in), or with the kill switch CONTEXT_ENGINE=off, the core does nothing and the mod stands
 //   aside for the session: no section, native compaction, the trigger's compaction skipped.
@@ -62,6 +63,7 @@ import {
   parseCoreReply,
   staleRefsOn,
   stubWorkingContextReads,
+  readMatchesDelivered,
   systemSectionText,
   checkLegacyFrame,
   hasOnlyUnkeyedFrames,
@@ -121,6 +123,8 @@ let fellBack = false;
  */
 let delivered: number | undefined;
 let lastDeliveredRevision: number | undefined;
+/** The committed text of the last compaction frame; per-step requests never enter the conversation. */
+let framedText: string | undefined;
 let coreCliOption: unknown;
 let executingTools = 0;
 let toolsDrained: Promise<void> | null = null;
@@ -351,6 +355,7 @@ export const register: Register = (on, options) => {
     fellBack = false;
     delivered = undefined;
     lastDeliveredRevision = undefined;
+    framedText = undefined;
     executingTools = 0;
     resolveToolsDrained?.();
     toolsDrained = null;
@@ -483,6 +488,7 @@ export const register: Register = (on, options) => {
         assertNoActiveTools();
         delivered = replaced.budget?.approxTokens;
         lastDeliveredRevision = replaced.revision;
+        framedText = fileText;
         log($, notice);
         const notices = [notice, ...(replaced.budget ? [replaced.budget.text] : [])];
         return { messages: [{ role: 'user', text: compactionText(replaced.workingContext, fileText, notices, COMPACTION_ONLY_FALLBACK.label, at.frameKey), toolUses: [] }] };
@@ -492,6 +498,7 @@ export const register: Register = (on, options) => {
       assertNoActiveTools();
       delivered = reply.budget?.approxTokens;
       lastDeliveredRevision = reply.revision;
+      framedText = fileText;
       if (fellBack) {
         fellBack = false;
         $.ui.status(perStep ? PER_STEP_STATUS : undefined);
@@ -557,6 +564,7 @@ export const register: Register = (on, options) => {
       executingTools++;
     }
     let result: Awaited<ReturnType<typeof next>>;
+    let unverifiedStub: string | undefined;
     try {
       // Shell input has no trustworthy file_path. Preserve later reads rather
       // than trying to infer filesystem effects from arbitrary shell syntax.
@@ -567,10 +575,14 @@ export const register: Register = (on, options) => {
       }
       if (opened && !e.agentId && isWorkingContextPath((e as { file_path?: unknown }).file_path, opened.workingContext)) {
         if (String(e.tool) !== 'Read') { editedThisTurn = true; pendingWithinTurnEdit = true; }
-        else if (!editedThisTurn && e.tool_use_id) stubIds.add(e.tool_use_id);
+        else if (!editedThisTurn && e.tool_use_id) { unverifiedStub = e.tool_use_id; stubIds.add(unverifiedStub); }
       }
       result = await next(e);
+      // The stub stands in for the conversation's frame, so it may replace only a Read that returned
+      // exactly that text. No core call here: the next record still syncs and reports receipts.
+      if (unverifiedStub && readMatchesDelivered(result.result, framedText)) unverifiedStub = undefined;
     } finally {
+      if (unverifiedStub) stubIds.delete(unverifiedStub);
       if (tracked && --executingTools === 0) {
         resolveToolsDrained?.();
         toolsDrained = null;
