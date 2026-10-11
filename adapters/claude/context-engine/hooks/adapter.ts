@@ -279,6 +279,18 @@ export function stubWorkingContextReads(content: readonly Block[], stubIds: Read
 }
 
 /**
+ * Whether a Read tool record (the host's structured `result` of the tool call) returned the whole
+ * of `delivered`. The host normalizes the text it returns, so this compares that text, not disk
+ * bytes. Any other record, a read of only some lines or no delivered text keeps the real result.
+ */
+export function readMatchesDelivered(record: unknown, delivered: string | undefined): boolean {
+  if (delivered === undefined || typeof record !== 'object' || record === null) return false;
+  const { type, file } = record as { type?: unknown; file?: { content?: unknown; numLines?: unknown; totalLines?: unknown } | null };
+  return type === 'text' && typeof file === 'object' && file !== null && file.content === delivered
+    && typeof file.totalLines === 'number' && file.numLines === file.totalLines;
+}
+
+/**
  * A Delivery Mode: its exact label and its known gaps. The mod's copy of the core's DeliveryMode
  * (core/delivery.ts): the hooks module cannot import the core, so a unit test keeps the two alike.
  */

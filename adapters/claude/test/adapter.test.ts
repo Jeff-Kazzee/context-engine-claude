@@ -30,6 +30,7 @@ import {
   assertShellBoundary,
   checkLegacyFrame,
   parseCoreReply,
+  readMatchesDelivered,
   stubWorkingContextReads,
 } from '../context-engine/hooks/adapter.ts';
 
@@ -153,6 +154,18 @@ test('the echo of a Working Context Read is replaced by a stub; other results in
   assert.ok(!String(stubbed[0]!.content).includes('SENTINEL_KEEP'));
   assert.deepEqual(stubbed[1], { type: 'tool_result', content: 'other', is_error: true });
   assert.equal(stubWorkingContextReads(content, new Set(['t9'])), null, 'nothing to stub: leave the row alone');
+});
+
+test('[CLA-027] only a whole-file Read record holding exactly the delivered text matches it', () => {
+  const delivered = '[[CTX_TURN 1 role=user]]\nCE_OLD_TEST\n';
+  const record = (file: Record<string, unknown>, type = 'text') => ({ type, file: { filePath: WC, content: delivered, numLines: 2, startLine: 1, totalLines: 2, ...file } });
+  assert.equal(readMatchesDelivered(record({}), delivered), true);
+  assert.equal(readMatchesDelivered(record({}), undefined), false, 'no frame delivered yet');
+  assert.equal(readMatchesDelivered(record({ content: delivered.replace('OLD', 'NEW') }), delivered), false);
+  assert.equal(readMatchesDelivered(record({ numLines: 2, totalLines: 3 }), delivered), false, 'the file holds more lines');
+  assert.equal(readMatchesDelivered(record({ numLines: undefined, totalLines: undefined }), delivered), false, 'missing line counts');
+  assert.equal(readMatchesDelivered(record({}, 'image'), delivered), false);
+  for (const other of [undefined, null, 'text', { type: 'text' }, { type: 'text', file: null }]) assert.equal(readMatchesDelivered(other, delivered), false);
 });
 
 test('the core is called as node on the checkout\'s core/cli.ts, found from the plugin root', { skip: process.platform !== 'linux' && 'supported POSIX/Linux path contract' }, () => {
