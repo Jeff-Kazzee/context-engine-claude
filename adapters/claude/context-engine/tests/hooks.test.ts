@@ -277,7 +277,7 @@ describe('session start', () => {
     expect(node).toBe('node');
     expect(cli).toMatch(/^\/.*\/core\/cli\.ts$/);
     expect(cli).not.toMatch(/\/\.\.\//);
-    expect(rest).toEqual(['open', '--session', SID, '--project', ROOT, '--runner', 'claude-code', '--hard-limit', '600000', '--if-enabled']);
+    expect(rest).toEqual(['open', '--session', SID, '--project', ROOT, '--runner', 'claude-code', '--hard-limit', '600000', '--if-enabled', '--defer-restore-ack']);
   });
 });
 
