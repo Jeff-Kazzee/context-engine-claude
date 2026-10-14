@@ -178,3 +178,8 @@ Issue 32 shared-core source pin: `dd525fafca4d6e0b1a965fe21498f5c7f0e7f52c` (65 
 CI integration shared-core source pin: `6e893ea12b6a85810fd0d88d8cab38f25bfa39d3` (65 identical core files), verified 2026-10-11. An uncertain append now reports close-and-reopen guidance before restore-notice refresh. Fixtures validate owner generations, distinct retry intents, torn-log refusal with lock release, and warm reads of newly appended rows. The core refuses missing event evidence before creating HEAD.
 
 The skipped MAX_SAFE_INTEGER fixture cannot test numerical allocation exhaustion without a complete prefix. The allocation guard retains its prior predicate. These synthetic checks do not establish model delivery, installation in an ordinary account, or power-loss durability. The original snapshot metadata and importedPaths remain unchanged.
+
+
+Confirmed-history and native reset repair, verified 2026-10-14 with focused offline fixtures. Both distributions retain pending restore payloads and use bounded disposable lookup shards for historical identities. Cold conflict refusal, unknown-ID refusal and continuous runner evidence remain required. Source logs and rejected edits remain authoritative.
+
+The focused checks cover cache damage, interrupted rebuild, unsafe cache links and requested-ID reads. They do not establish live provider acceptance, ordinary-profile loading or power-loss durability. Shared-core source pin: `a58503a9d3565807fa7debee8f6821170854bcb5` (67 identical core files), verified 2026-10-14. Original snapshot metadata and imported paths remain unchanged.
