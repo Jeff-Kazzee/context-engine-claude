@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { resolveStateRoot } from '../core/store.ts';
-import type { Rule } from './ledger.ts';
+import type { InventoryMode, Rule } from './ledger.ts';
 import { jsonRule, tomlTablesRule } from './rules.ts';
 
 export interface SetupContext {
@@ -46,6 +46,8 @@ export interface RunnerSpec {
   files: string[];
   /** Directories where the runner creates files during install. */
   watch: string[];
+  /** Namespaced mode inventories owned trees and retains opaque unrelated directory boundaries. */
+  inventoryMode?: InventoryMode;
   /** Directories that are ours by name (plugin caches, staged copies). */
   namespaced: string[];
   rules: Record<string, Rule>;
@@ -76,6 +78,7 @@ export function claudeSpec(ctx: SetupContext): RunnerSpec {
     bin: ctx.env.CONTEXT_ENGINE_CLAUDE_BIN || 'claude',
     files: [settings, installed, known],
     watch: [join(h, 'plugins'), join(h, 'backups')],
+    inventoryMode: 'namespaced',
     namespaced: [join(h, 'plugins', 'cache', MARKETPLACE), ...CLAUDE_PLUGIN_IDS.map((id) => join(h, 'plugins', 'data', id.replace('@', '-')))],
     rules: {
       [settings]: jsonRule(
