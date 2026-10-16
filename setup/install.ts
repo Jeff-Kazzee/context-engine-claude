@@ -36,7 +36,8 @@ export function interruptedInstall(ctx: SetupContext, spec: RunnerSpec): Snapsho
   if (typeof s !== 'object' || s === null || typeof s.dir !== 'string' || resolve(s.dir) !== s.dir || dirname(s.dir) !== join(ctx.setupDir, 'backups') || !basename(s.dir).startsWith(`${spec.id}-`)
     || !Array.isArray(s.files) || !same(s.files.map((f) => f.path), spec.files) || !s.files.every((f, i) => f.after === null && (f.before === null || f.before === copy(i)))
     || !Array.isArray(s.namespaced) || !same(s.namespaced.map((n) => n.path), spec.namespaced) || !s.namespaced.every((n) => typeof n.existed === 'boolean')
-    || !same(s.watch, spec.watch) || !Array.isArray(s.listing) || !s.listing.every((p) => typeof p === 'string')) {
+    || !same(s.watch, spec.watch) || !Array.isArray(s.listing) || !s.listing.every((p) => typeof p === 'string')
+    || (s.inventoryMode !== undefined && (s.inventoryMode !== 'full' && s.inventoryMode !== 'namespaced' || s.inventoryMode !== spec.inventoryMode))) {
     throw unusable('violates confinement policy');
   }
   const snapshot = openPrivateDirectory(s.dir);
@@ -94,7 +95,7 @@ function undoInterruptedInstall(ctx: SetupContext, spec: RunnerSpec): string[] {
     'An earlier install was interrupted. Its configuration changes were rolled back and unmanaged edits were kept.',
     // The undo never restores or deletes a file whose before copy is gone. Its report says what stayed.
     ...describe(reports.filter((r) => r.outcome === 'before-missing' || (r.outcome === 'missing' && r.lost !== undefined))),
-    `Unowned new paths retained from it: ${retained.length}. Its before backups: ${join(snap.dir, 'before')}`,
+    `Observed unowned new paths retained from it: ${retained.length}. Unrelated directory contents are not counted in namespaced inventory. Its before backups: ${join(snap.dir, 'before')}`,
   ];
 }
 
@@ -153,7 +154,7 @@ export function installLocked(ctx: SetupContext, spec: RunnerSpec): string[] {
     throw new SetupError(`${spec.title}: already installed (${prior.at}); run \`context-engine-${spec.id} uninstall\` first`);
   }
   const recovered = undoInterruptedInstall(ctx, spec);
-  const snap = takeSnapshot({ backupRoot: join(ctx.setupDir, 'backups'), kind: spec.id, files: spec.files, watch: spec.watch, namespaced: spec.namespaced });
+  const snap = takeSnapshot({ backupRoot: join(ctx.setupDir, 'backups'), kind: spec.id, files: spec.files, watch: spec.watch, namespaced: spec.namespaced, inventoryMode: spec.inventoryMode });
   let publication: string | undefined;
   try {
     safeWrite(pendingPath(ctx, spec.id), `${JSON.stringify(snap)}\n`);
@@ -175,7 +176,7 @@ export function installLocked(ctx: SetupContext, spec: RunnerSpec): string[] {
       ...recovered,
       `Changed by \`${spec.bin} plugin\`: ${changed.join(', ') || '(no config file)'}`,
       `Byte backups taken before the change: ${join(ledger.dir, 'before')}`,
-      `New paths outside Context Engine namespaces retained: ${ledger.retainedPaths?.length ?? 0} (ownership unverified; uninstall will leave them alone)`,
+      `Observed new paths outside Context Engine namespaces retained: ${ledger.retainedPaths?.length ?? 0} (ownership unverified; uninstall will leave them alone). Unrelated directory contents are not counted in namespaced inventory.`,
     ];
   } catch (e) {
     // The undo of an interrupted install already finished, so a failure report keeps its lines.
@@ -188,7 +189,7 @@ export function installLocked(ctx: SetupContext, spec: RunnerSpec): string[] {
       try { removeFailedPointer(ctx, spec.id, publication); }
       catch (cleanupError) { throw new AggregateError([e, cleanupError], report(`${spec.title}: install failed; pointer cleanup was incomplete; configuration rollback completed and backups are preserved`)); }
     }
-    throw new SetupError(report(`${e instanceof Error ? e.message : String(e)}; tracked configuration rollback completed with unmanaged edits preserved; ${retained.length} unowned new paths retained; before backups: ${join(snap.dir, 'before')}`), { cause: e });
+    throw new SetupError(report(`${e instanceof Error ? e.message : String(e)}; tracked configuration rollback completed with unmanaged edits preserved; ${retained.length} observed unowned new paths retained (unrelated directory contents are not counted in namespaced inventory); before backups: ${join(snap.dir, 'before')}`), { cause: e });
   }
 }
 
@@ -234,7 +235,7 @@ export function uninstallLocked(ctx: SetupContext, spec: RunnerSpec): string[] {
   // A kill between pointer publication and pending removal leaves this install's own pending record.
   if (pending?.dir === ledger.dir) removePending(ctx, spec.id);
   lines.push(`Backups kept: ${ledger.dir}`);
-  if (ledger.retainedPaths?.length) lines.push(`Unowned new paths retained: ${ledger.retainedPaths.length}`);
+  if (ledger.retainedPaths?.length) lines.push(`Unowned new paths retained (observed boundaries): ${ledger.retainedPaths.length} (unrelated directory contents are not counted in namespaced inventory)`);
   return lines;
 }
 

@@ -48,7 +48,7 @@ export interface Ledger {
   files: Array<{ path: string; before: string | null; after: string | null }>;
   createdFiles: Array<{ path: string; sha: string }>;
   createdDirs: string[];
-  /** New watched paths whose ownership is unknown; retained without reading their contents. */
+  /** Observed new unowned paths. Opaque directory boundaries do not enumerate their descendants. */
   retainedPaths?: string[];
   /** Directories that are ours by name; removed whole if they didn't exist before. */
   namespaced: Array<{ path: string; existed: boolean }>;
@@ -56,9 +56,13 @@ export interface Ledger {
   extra: Record<string, unknown>;
 }
 
+export type InventoryMode = 'full' | 'namespaced';
+
 export interface Snapshot extends Omit<Ledger, 'createdFiles' | 'createdDirs'> {
   watch: string[];
   listing: string[];
+  /** Missing on older snapshots: retain their full recursive inventory. */
+  inventoryMode?: InventoryMode;
 }
 
 export interface FileReport {
@@ -76,8 +80,13 @@ export interface FileReport {
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const readText = (path: string): string | null => safeRead(path)?.toString('utf8') ?? null;
 
-/** Complete bounded ownership inventory; refuse rather than accept a partial walk. */
-function list(roots: string[]): string[] {
+function checkInventoryMode(mode: InventoryMode | undefined): void {
+  if (mode !== undefined && mode !== 'full' && mode !== 'namespaced') throw new Error('unknown setup inventory mode');
+}
+
+/** Fully inventory owned trees. Namespaced mode records unrelated directory boundaries only. */
+function list(roots: string[], mode?: InventoryMode, namespaces: string[] = []): string[] {
+  checkInventoryMode(mode);
   const out: string[] = [];
   let pathBytes = 0;
   const walk = (p: string, depth: number) => {
@@ -89,8 +98,11 @@ function list(roots: string[]): string[] {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw e;
     }
+    const ancestor = namespaces.some(n => n === p || n.startsWith(`${p}${sep}`));
+    if (mode === 'namespaced' && ancestor && !st.isDirectory()) throw new Error(`setup namespace ancestor is not a directory: ${p}`);
     out.push(st.isDirectory() ? `${p}/` : p);
-    if (st.isDirectory()) {
+    const descend = mode !== 'namespaced' || depth === 0 || ancestor || namespaces.some(n => p.startsWith(`${n}${sep}`));
+    if (st.isDirectory() && descend) {
       const directory = opendirSync(p);
       try { for (let entry; (entry = directory.readSync()) !== null;) walk(join(p, entry.name), depth + 1); }
       finally { directory.closeSync(); }
@@ -149,10 +161,11 @@ function present(path: string): boolean {
 }
 
 /** Backs up `files` byte for byte into a new timestamped dir under `backupRoot`, and lists `watch`. */
-export function takeSnapshot(opts: { backupRoot: string; kind: string; files: string[]; watch: string[]; namespaced: string[]; extra?: Record<string, unknown> }): Snapshot {
+export function takeSnapshot(opts: { backupRoot: string; kind: string; files: string[]; watch: string[]; namespaced: string[]; inventoryMode?: InventoryMode; extra?: Record<string, unknown> }): Snapshot {
+  checkInventoryMode(opts.inventoryMode);
   preflightOwnership(opts);
   const before=opts.files.map(path=>{const bytes=safeRead(path);assertBackupSafe(path,bytes);return bytes;});
-  const listing = list(opts.watch);
+  const listing = list(opts.watch, opts.inventoryMode, opts.namespaced);
   const namespaced = opts.namespaced.map(path => ({ path, existed: existsSync(path) }));
   const at = new Date();
   const copies: Array<{ path: string; bytes: Buffer }> = [];
@@ -188,7 +201,7 @@ export function takeSnapshot(opts: { backupRoot: string; kind: string; files: st
       return { path, before: copy, after: null };
     });
     return { version: 1, kind: opts.kind, at: at.toISOString(), dir, files, namespaced,
-      extra: opts.extra ?? {}, watch: opts.watch, listing };
+      extra: opts.extra ?? {}, watch: opts.watch, listing, inventoryMode: opts.inventoryMode };
   } catch (error) {
     try {
       for (const copy of copies.reverse()) safeRemove(copy.path, copy.bytes);
@@ -243,6 +256,12 @@ export function discardSnapshot(s: Snapshot): void {
 
 /** Records the edit's result next to the backups and returns the ledger. */
 export function completeLedger(s: Snapshot): Ledger {
+  checkInventoryMode(s.inventoryMode);
+  let listing: string[] | undefined;
+  if (s.inventoryMode === 'namespaced') {
+    preflightOwnership({ files: [], watch: s.watch, namespaced: s.namespaced.map(n => n.path) });
+    listing = list(s.watch, s.inventoryMode, s.namespaced.map(n => n.path));
+  }
   const after=s.files.map(f=>{const bytes=safeRead(f.path);assertBackupSafe(f.path,bytes);return bytes;});
   const files = s.files.map((f, i) => {
     const bytes = after[i]!;
@@ -253,7 +272,7 @@ export function completeLedger(s: Snapshot): Ledger {
   });
   const before = new Set(s.listing);
   const tracked = new Set(s.files.map((f) => f.path));
-  const created = list(s.watch).filter((p) => !before.has(p) && !tracked.has(p));
+  const created = (listing ?? list(s.watch)).filter((p) => !before.has(p) && !tracked.has(p));
   const owned = (path: string) => s.namespaced.some(n => path === n.path || path.startsWith(`${n.path}/`));
   const ledger: Ledger = {
     version: 1,
@@ -300,17 +319,23 @@ export function readLedger(dir: string, policy: LedgerPolicy): Ledger {
 
 /** Reverse known managed fields; preserve concurrent changes without post-edit ownership proof. */
 export function rollbackSnapshot(s: Snapshot, rules: Record<string, Rule>, reports: FileReport[] = []): string[] {
+  checkInventoryMode(s.inventoryMode);
+  let listing: string[] | undefined;
+  if (s.inventoryMode === 'namespaced') {
+    preflightOwnership({ files: [], watch: s.watch, namespaced: s.namespaced.map(n => n.path) });
+    listing = list(s.watch, s.inventoryMode, s.namespaced.map(n => n.path));
+  }
   const before = new Set(s.listing);
   const l: Ledger = { ...s, files: s.files.map(f => ({ ...f, after: f.before })), createdFiles: [], createdDirs: [] };
   const unchanged = assess(l, rules);
   reports.push(...revert(l, rules, unchanged));
   const owned = (path: string) => s.namespaced.some(n => path === n.path || path.startsWith(`${n.path}/`));
-  for (const path of list(s.watch).filter(p => !before.has(p) && p.endsWith('/') && owned(p)).sort((a, b) => b.length - a.length)) {
+  for (const path of (listing ?? list(s.watch)).filter(p => !before.has(p) && p.endsWith('/') && owned(p)).sort((a, b) => b.length - a.length)) {
     try { safeRemoveEmptyDirectory(path.slice(0, -1)); } catch { /* Retain nonempty/unavailable paths. */ }
   }
   // Only tracked config and newly created namespaced artifacts are provably ours. Other paths
   // may belong to a concurrent plugin install or backup, so retain them without reading them.
-  return list(s.watch).filter(p => !before.has(p));
+  return list(s.watch, s.inventoryMode, s.namespaced.map(n => n.path)).filter(p => !before.has(p));
 }
 
 /** Per file: true when nothing but our own entries changed since the edit. Call after runner removal commands. */
