@@ -12,7 +12,7 @@ In a disposable project and isolated state root, exercise install, enable, statu
 
 ## Owner-present acceptance
 
-1. Record the approved source SHA, artifact hash, host, Node and Claude versions. Keep the checkout in place.
+1. Record the approved source SHA, the SHA-256 of the exact source archive extracted for installation (label any npm inspection tarball hash separately), host, Node and Claude versions. Keep the checkout in place.
 2. Install both plugins in the authorized profile and enable only the disposable project. Record status and start a new session.
 3. Use direct Read/Edit/Write and harmless sentinels to verify an in-turn edit, complete digest-bound read-back, the replacement frame, and recall without another tool call. Verify the two-plugin interactive bridge separately from headless explicit compaction.
 4. Disable before uninstalling if revoking shared participation; check byte-exact restoration where no unrelated configuration changed. Preserve retained Event Logs and backups.
@@ -25,4 +25,4 @@ The owner's handoff, recorded outside this repository, reports a live acceptance
 - Active same-user substitution of core-owned private paths, writes after the final validation sample, end-to-end numeric exhaustion, and real power-loss durability remain outside demonstrated guarantees.
 - Bash ambiguity can make the adapter stand aside; preserve the native conversation and start a fresh session as documented. Experimental per-step mode stays off for the first trial.
 - Keep existing core hardening follow-ups and their evidence. The owner closes core #26.
-- Owner approval is required for dev-to-main promotion and any later publication. This checklist grants neither approval.
+- The owner authorized dev-to-main promotion and publication for this release on 2026-10-18, conditional on this checklist's requirements passing. Any later release needs its own approval.
