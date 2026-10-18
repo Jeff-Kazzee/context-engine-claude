@@ -13,8 +13,10 @@ const HELP = `context-engine-claude
   uninstall [--claude]
   enable|disable|status [--project <dir>]
   status [--json]
-Installs only claude; inert until enabled per project. Backups precede config changes.
-Uninstall keeps session data. See README.md and adapters/claude/README.md.
+Installs only claude; projects without shared opt-in stay inactive. Backups precede config changes.
+Install or reinstall can activate previously enabled projects, including inherited opt-in.
+Uninstall keeps session data and shared participation. Disable revokes that scope for both adapters' hooks. Run context-engine-codex disable too to restore Codex project settings.
+Check status before starting a new session. See README.md and adapters/claude/README.md.
 `;
 
 export async function runSetup(argv: string[]): Promise<number> {
@@ -53,12 +55,12 @@ export async function runSetup(argv: string[]): Promise<number> {
             const lines = install(ctx, spec);
             const label = claudeModeLabel(ctx.env, ctx.claudeHome);
 
-            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Inert until `context-engine-claude enable` in a project (the pilot is opt-in).']);
+            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Projects without shared opt-in stay inactive. Previously enabled projects (including inherited opt-in) can activate on install or reinstall.', '  For a project without opt-in, run `context-engine-claude enable` only after approving that scope.', '  Check `context-engine-claude status` in each intended project before starting a new session.']);
           } else {
             // Without an install record, a successful uninstall only undid an interrupted install.
             const installed = !!installedLedger(ctx, spec.id, spec);
             const lines = uninstall(ctx, spec);
-            out([installed ? `${spec.title}: uninstalled.` : `${spec.title}: not installed. The interrupted install was rolled back.`, ...lines.map((l) => `  ${l}`)]);
+            out([installed ? `${spec.title}: uninstalled.` : `${spec.title}: not installed. The interrupted install was rolled back.`, ...lines.map((l) => `  ${l}`), '  Shared participation is retained; reinstall can reactivate previously enabled projects. Disable revokes the selected scope for both adapters\' hooks. Run context-engine-codex disable too to restore Codex project settings.']);
           }
         } catch (e) {
           process.stderr.write(refusal(e));

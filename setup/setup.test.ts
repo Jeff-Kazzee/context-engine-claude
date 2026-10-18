@@ -360,7 +360,7 @@ test('round trip: claude install, enable, record, edit, sync, disable and uninst
 test('the runtime README states supported modes, setup proof, user control and unverified limits', () => {
   const readme=readFileSync(new URL('../README.md',import.meta.url),'utf8');assertQualified(readme);
   for(const label of ["Full Replacement per user turn. Explicit read-back within a turn", "EXPERIMENTAL: Full Replacement per model step", "Compaction-only"])assert.ok(readme.includes(label),label);
-  assert.match(readme,/Give this prompt to your agent to set it up/);assert.match(readme,/off in every project/);
+  assert.match(readme,/Give this prompt to your agent to set it up/);assert.match(readme,/Projects without shared opt-in start \*\*off\*\*/);
   assert.match(readme,/fresh disposable test project FIRST/);assert.match(readme,/NEXT REQUEST/);assert.match(readme,/file write is not proof/);
   assert.match(readme,/exact head/);assert.match(readme,/approval/);assert.match(readme,/unverified/i);assert.match(readme,/Linux[\s\S]*Node \*\*24/);
   assert.match(readme,/CONTEXT_ENGINE=off/);assert.match(readme,/context-engine-claude disable/);assert.match(readme,/context-engine-claude uninstall/);
