@@ -8,7 +8,7 @@ Follow the root README from a retained checkout at the approved commit. Linux wi
 
 A source archive must retain `package-lock.json` to reproduce `npm ci`. Extract it outside `node_modules`, keep the directory at its installed path, and use the README's `npm ci`, `npm link`, and runtime-specific setup commands. An npm package tarball is a separate inspection artifact; do not assume it includes the lockfile or provides a supported `npm install <tarball>` path. The CLI runs TypeScript source from its retained checkout.
 
-In a disposable project and isolated state root, exercise install, enable, status, disable and uninstall. Test fresh installation, retained opt-in after reinstall, and disable before reinstall. Uninstall preserves shared participation; it does not revoke the sibling adapter's opt-in. Explicit disable affects both adapters in that shared scope. Check status before a new session. Scratch-home tests with stand-in runners establish setup behavior only.
+In a disposable project and isolated state root, exercise install, enable, status, disable and uninstall. Test fresh installation, retained opt-in after reinstall, and disable before reinstall. Uninstall preserves shared participation; it does not revoke the sibling adapter's opt-in. Explicit disable stops both adapters' hooks in that shared scope, and `context-engine-codex disable` also restores Codex project settings. Check status before a new session. Scratch-home tests with stand-in runners establish setup behavior only.
 
 ## Owner-present acceptance
 
@@ -17,7 +17,7 @@ In a disposable project and isolated state root, exercise install, enable, statu
 3. Use direct Read/Edit/Write and harmless sentinels to verify an in-turn edit, complete digest-bound read-back, the replacement frame, and recall without another tool call. Verify the two-plugin interactive bridge separately from headless explicit compaction.
 4. Disable before uninstalling if revoking shared participation; check byte-exact restoration where no unrelated configuration changed. Preserve retained Event Logs and backups.
 
-The handoff reports v6 live acceptance on 2026-10-16, including both plugins, an in-turn Read/Edit, the edited replacement frame, no-tool recall and byte-exact restoration. That result belongs to v6, not every later artifact. Current-head acceptance and bounded long-session behavior remain separate evidence requirements. Do not perform a live trial while the owner is absent.
+The owner's handoff, recorded outside this repository, reports a live acceptance run labeled v6 on 2026-10-16, including both plugins, an in-turn Read/Edit, the edited replacement frame, no-tool recall and byte-exact restoration. That result belongs to the source version it tested, not every later artifact. Current-head acceptance and bounded long-session behavior remain separate evidence requirements. Do not perform a live trial while the owner is absent.
 
 ## Limitations and open decisions
 
