@@ -55,7 +55,7 @@ export async function runSetup(argv: string[]): Promise<number> {
             const lines = install(ctx, spec);
             const label = claudeModeLabel(ctx.env, ctx.claudeHome);
 
-            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Projects without shared opt-in stay inactive. Previously enabled projects (including inherited opt-in) can activate on install or reinstall.', '  Check `context-engine-claude status` in each intended project before starting a new session.']);
+            out([`${spec.title}: installed. Delivery Mode: ${label}.`, ...lines.map((l) => `  ${l}`), '  Projects without shared opt-in stay inactive. Previously enabled projects (including inherited opt-in) can activate on install or reinstall.', '  For a project without opt-in, run `context-engine-claude enable` only after approving that scope.', '  Check `context-engine-claude status` in each intended project before starting a new session.']);
           } else {
             // Without an install record, a successful uninstall only undid an interrupted install.
             const installed = !!installedLedger(ctx, spec.id, spec);
