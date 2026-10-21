@@ -7,7 +7,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=24.22.1 <25 || >=26.12.1 <27"
   },
   "bin": {
     "context-engine": "core/cli.ts",
@@ -17,9 +17,11 @@
     ".": "./core/index.ts"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 \"core/**/*.test.ts\" \"setup/*.test.ts\" \"adapters/claude/test/*.test.ts\"",
-    "typecheck": "tsc --noEmit -p .",
-    "test:claude-plugins": "claude plugin test adapters/claude/context-engine && claude plugin test adapters/claude/context-engine-trigger"
+    "test": "node setup/check-node.mjs && node --test --test-concurrency=1 \"core/**/*.test.ts\" \"setup/*.test.ts\" \"adapters/claude/test/*.test.ts\" \"setup/*.test.mjs\"",
+    "typecheck": "node setup/check-node.mjs && tsc --noEmit -p .",
+    "test:claude-plugins": "node setup/check-node.mjs && claude plugin test adapters/claude/context-engine && claude plugin test adapters/claude/context-engine-trigger",
+    "check:runtime": "node setup/check-node.mjs",
+    "preinstall": "node setup/check-node.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",
