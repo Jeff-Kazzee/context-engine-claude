@@ -1,3 +1,4 @@
+import { assertSupportedNode } from './node-runtime.mjs';
 // Setup commands for people: install, uninstall, enable, disable, status. Text output.
 import { parseArgs } from 'node:util';
 import { realpathSync } from 'node:fs';
@@ -20,6 +21,11 @@ Check status before starting a new session. See README.md and adapters/claude/RE
 `;
 
 export async function runSetup(argv: string[]): Promise<number> {
+  try { assertSupportedNode(); }
+  catch (e) {
+    process.stderr.write(refusal(e));
+    return 1;
+  }
   const [command, ...args] = argv;
   const { values } = parseArgs({
     args,

@@ -1,6 +1,6 @@
 # Claude Code adapter contract
 
-Start with the [agent setup prompt and workflow](../../README.md). Baseline: Claude Code 2.1.289 mods, Node 24+, Linux `/proc`.
+Start with the [agent setup prompt and workflow](../../README.md). Baseline: Claude Code 2.1.289 mods, stable Node 24.22.1+ (24.x) or 26.12.1+ (26.x), Linux `/proc`.
 
 Default delivery is **Full Replacement per user turn**, with explicit read-back within a turn. `context-engine` answers `session.compact` with the Working Context as one user-role message. `context-engine-trigger` requests compaction at interactive turn boundaries. Headless hosts send `/compact` between turns. Rows become recallable only at compaction. Resume restores the latest committed Revision. Ambiguous old unkeyed frames make the mod stand aside rather than guess.
 

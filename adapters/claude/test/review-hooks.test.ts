@@ -7,6 +7,7 @@ import { join, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { stripTypeScriptTypes } from 'node:module';
 import { parseArgs } from 'node:util';
+import { assertSupportedNode } from '../../../setup/node-runtime.mjs';
 import * as adapter from '../context-engine/hooks/adapter.ts';
 import * as perStep from '../context-engine/hooks/per-step.ts';
 
@@ -86,7 +87,7 @@ test('successful setup output directs activation to the Claude-specific command'
   const erased = stripTypeScriptTypes(source).replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '').replace('export async function runSetup', 'async function runSetup');
   let output = '', installs = 0;
   const deps = {
-    parseArgs, SetupError: class extends Error {},
+    parseArgs, assertSupportedNode, SetupError: class extends Error {},
     realpathSync: (path: string) => path, resolve: (path: string) => path, join,
     acquireSetupLock: () => () => {},
     setupContext: () => ({ env: {}, claudeHome: '/synthetic', setupDir: '/synthetic-state' }),
