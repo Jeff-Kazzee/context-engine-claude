@@ -1,9 +1,11 @@
+import { requireVerifiedIntegration } from './platform.ts';
 import { dirname } from 'node:path';
 // Claude-only project participation: never touches another runner's config or ledger.
 import { findRecord, killSwitchOn, participation, setParticipation } from '../core/index.ts';
 import { installedLedger, refuseInterruptedInstall } from './install.ts';
 import { claudeSpec, type SetupContext } from './runners.ts';
 export function enableProject(ctx: SetupContext, projectRoot: string): string[] {
+  requireVerifiedIntegration();
   // A half-applied install could already be loaded by Claude, so enable changes nothing until it is undone.
   refuseInterruptedInstall(ctx, claudeSpec(ctx), true);
   let ledger;
@@ -19,6 +21,7 @@ export function enableProject(ctx: SetupContext, projectRoot: string): string[] 
   return lines;
 }
 export function disableProject(ctx: SetupContext, projectRoot: string): string[] {
+  requireVerifiedIntegration();
   setParticipation({ projectRoot, stateDir: dirname(ctx.setupDir), state: 'off' });
   const p = participation({ projectRoot, stateDir: dirname(ctx.setupDir), env: {} });
   return [`Context Engine disabled for ${p.project} and its subdirectories (new Claude sessions).`];
