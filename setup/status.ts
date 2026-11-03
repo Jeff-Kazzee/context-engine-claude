@@ -1,5 +1,7 @@
+import { requireVerifiedIntegration } from './platform.ts';
 import { join, delimiter, dirname } from 'node:path';
-import { closeSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { closeSync } from '../core/platform.ts';
 import { killSwitchOn, participation } from '../core/index.ts';
 import { TURN_MODE, PER_STEP_MODE, coreArgv } from '../adapters/claude/context-engine/hooks/adapter.ts';
 import { MODE_ENV, perStepOn } from '../adapters/claude/context-engine/hooks/per-step.ts';
@@ -15,6 +17,7 @@ export function claudeModeLabel(env: NodeJS.ProcessEnv, home?: string): string {
 }
 /** `interrupted` names a setup lock and an interrupted install record that may belong to a running install. */
 export function statusText(ctx: SetupContext, projectRoot: string, interrupted: string | null = null) {
+  requireVerifiedIntegration();
   const rootFd = openPrivateDirectory(dirname(ctx.setupDir));
   if (rootFd !== undefined) closeSync(rootFd);
   const p = participation({ projectRoot, stateDir: dirname(ctx.setupDir), env: ctx.env });
